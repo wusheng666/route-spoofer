@@ -269,12 +269,6 @@ class FakeGpsPlugin : Plugin() {
         }
     }
 
-    private companion object {
-        fun isGmsAvailable(context: Context): Boolean =
-            GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) ==
-                ConnectionResult.SUCCESS
-    }
-
     // ----------------------------------------------------------------- readiness
 
     @PluginMethod
@@ -556,5 +550,9 @@ class FakeGpsPlugin : Plugin() {
         private const val DEV_NOTIF_ID = 4712
         private const val DEFAULT_SPEED = 40.0
         private const val DEFAULT_INTERVAL = 1000
+
+        fun isGmsAvailable(context: Context): Boolean =
+            GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) ==
+                ConnectionResult.SUCCESS
     }
 }
