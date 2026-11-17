@@ -21,6 +21,8 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
@@ -231,6 +233,11 @@ class FakeGpsPlugin : Plugin() {
             call.reject("location permission not granted", ERROR_PERMISSION)
             return
         }
+        if (!isGmsAvailable(context)) {
+            Log.i(TAG, "getRealFix: Play Services absent — skipping Fused layer, web will fall back")
+            call.reject("Play Services unavailable", ERROR_UNAVAILABLE)
+            return
+        }
         val request =
             CurrentLocationRequest
                 .Builder()
@@ -260,6 +267,12 @@ class FakeGpsPlugin : Plugin() {
             Log.w(TAG, "getRealFix: fused provider unavailable", e)
             call.reject(e.message ?: "no fix", ERROR_UNAVAILABLE)
         }
+    }
+
+    private companion object {
+        fun isGmsAvailable(context: Context): Boolean =
+            GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) ==
+                ConnectionResult.SUCCESS
     }
 
     // ----------------------------------------------------------------- readiness

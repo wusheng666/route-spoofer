@@ -8,6 +8,8 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.location.LocationCompat
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 
@@ -51,7 +53,15 @@ class MockLocationInjector(private val context: Context) {
         if (!lmOk) {
             Log.w(TAG, "Test providers not fully registered — is Route Spoofer the selected mock location app?")
         }
-        engageFlpMockMode()
+        // Only touch Fused layer if Play Services is actually present — a no-GMS
+        // device (Huawei etc.) shows the Play Services "not supported" dialog on
+        // every setMockMode()/setMockLocation() call, which we must avoid.
+        if (isGmsAvailable(context)) {
+            engageFlpMockMode()
+        } else {
+            Log.i(TAG, "Play Services absent — skipping Fused mock layer, LocationManager only")
+            flpMockEngaged = false
+        }
         return lmOk
     }
 
@@ -61,7 +71,7 @@ class MockLocationInjector(private val context: Context) {
             setProviderEnabled(name, false)
             removeProvider(name)
         }
-        disengageFlpMockMode()
+        if (isGmsAvailable(context)) disengageFlpMockMode()
     }
 
     /** Push [fix] (ground speed [speedMs], m/s) into the LM providers AND FLP. */
@@ -207,5 +217,9 @@ class MockLocationInjector(private val context: Context) {
         const val ACCURACY_M = 4f
         const val VERTICAL_ACCURACY_M = 3f
         val PROVIDERS = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+
+        fun isGmsAvailable(context: Context): Boolean =
+            GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) ==
+                ConnectionResult.SUCCESS
     }
 }
