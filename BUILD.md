@@ -104,20 +104,30 @@ When both rows show ✓, tap the big play button.
 
 ### Map provider
 In `www/index.html`, near the top of the script, these constants pick the
-basemaps (both key-less):
+basemaps:
 
 ```js
-const MAP_VECTOR_STYLE = 'https://tiles.openfreemap.org/styles/positron';   // primary
-const MAP_RASTER_URL   = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';    // fallback
+const AMAP_TILE_URL  = 'https://webrd0{s}.is.autonavi.com/appmaptile?…';  // primary (高德)
+const MAP_RASTER_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';  // fallback
 ```
 
-The primary layer is the OpenFreeMap vector style, rendered inside Leaflet by
-MapLibre GL + `@maplibre/maplibre-gl-leaflet`, vendored (pinned) under
-`www/vendor/`. If MapLibre can't load (old WebView that can't parse the bundle,
-no WebGL) or the style fails before its first load, the app falls back to the
-OSM standard raster tiles. `console.info('[map] basemap: …')` logs which one
-was chosen. After editing, re-run `npx cap sync android` (or rebuild) so the
-change reaches the app.
+The primary basemap is AMap (高德) raster tiles, loaded inside Leaflet — no SDK
+or key required. If not a single AMap tile loads, the app falls back to the OSM
+standard raster tiles. `console.info('[map] basemap: …')` logs which one
+was chosen.
+
+AMap tiles use **GCJ-02**, while the route and the injected GPS fixes are
+**WGS-84**. `toMapLL()` / `fromMapLL()` convert at every map boundary (markers,
+polylines, taps, drags, emitter, real-position dot), so routes stay aligned with
+the basemap. Keep route data in WGS-84 — converting the stored points would make
+the injected location offset for every other app.
+
+Place search uses AMap's Web-service geocoding when `AMAP_WEB_KEY` is set (near
+the search code); without a key it falls back to Nominatim. Get a key at
+<https://console.amap.com/dev/key/app> (service type: Web服务).
+
+After editing, re-run `npx cap sync android` (or rebuild) so the change reaches
+the app.
 
 ### App id / name
 Rename in **two** places, then `npx cap sync`:

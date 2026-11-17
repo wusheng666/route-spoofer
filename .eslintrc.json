@@ -1,6 +1,5 @@
 {
   "root": true,
-  "ignorePatterns": ["www/vendor/"],
   "env": {
     "browser": true,
     "es2019": true
