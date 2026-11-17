@@ -16,6 +16,8 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -97,35 +99,40 @@ class AppUpdaterPlugin : Plugin() {
     private fun download(url: String, target: File) {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.instanceFollowRedirects = true
-        conn.connectTimeout = 20000
-        conn.readTimeout = 30000
+        conn.connectTimeout = CONNECT_TIMEOUT_MS
+        conn.readTimeout = READ_TIMEOUT_MS
         conn.setRequestProperty("User-Agent", "RouteSpoofer-Updater")
         try {
             conn.connect()
-            if (conn.responseCode !in 200..299) throw IllegalStateException("HTTP ${conn.responseCode}")
+            check(conn.responseCode in HTTP_OK_MIN..HTTP_OK_MAX) { "HTTP ${conn.responseCode}" }
             val total = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
-            var read = 0L
-            var lastPct = -1
             conn.inputStream.use { input ->
                 FileOutputStream(target).use { output ->
-                    val buf = ByteArray(64 * 1024)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        output.write(buf, 0, n)
-                        read += n
-                        if (total > 0) {
-                            val pct = ((read * 100) / total).toInt()
-                            if (pct != lastPct) {
-                                lastPct = pct
-                                emitProgress(pct)
-                            }
-                        }
-                    }
+                    copyWithProgress(input, output, total)
                 }
             }
         } finally {
             conn.disconnect()
+        }
+    }
+
+    /** Streams [input] into [output], reporting whole percentages when [total] is known. */
+    private fun copyWithProgress(input: InputStream, output: OutputStream, total: Long) {
+        val buf = ByteArray(BUFFER_SIZE)
+        var read = 0L
+        var lastPct = -1
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            output.write(buf, 0, n)
+            read += n
+            if (total > 0) {
+                val pct = ((read * PERCENT) / total).toInt()
+                if (pct != lastPct) {
+                    lastPct = pct
+                    emitProgress(pct)
+                }
+            }
         }
     }
 
@@ -185,7 +192,7 @@ class AppUpdaterPlugin : Plugin() {
     private fun sha256(file: File): String {
         val md = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
-            val buf = ByteArray(64 * 1024)
+            val buf = ByteArray(BUFFER_SIZE)
             while (true) {
                 val n = input.read(buf)
                 if (n < 0) break
@@ -193,5 +200,14 @@ class AppUpdaterPlugin : Plugin() {
             }
         }
         return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private companion object {
+        const val CONNECT_TIMEOUT_MS = 20_000
+        const val READ_TIMEOUT_MS = 30_000
+        const val BUFFER_SIZE = 64 * 1024
+        const val PERCENT = 100
+        const val HTTP_OK_MIN = 200
+        const val HTTP_OK_MAX = 299
     }
 }

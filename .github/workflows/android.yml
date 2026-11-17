@@ -5,11 +5,13 @@ name: Android APK
 # Signing: self-updates only work if the new APK carries the SAME signing
 # certificate as the installed one. Android treats a differently signed APK as
 # a different app and the installer fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
-# So a release build is preferred:
-#   * if the four keystore secrets are set  -> assembleRelease, signed with them
-#   * otherwise                             -> assembleDebug + a loud warning
-#     (the runner generates a fresh debug.keystore on every run, so debug builds
-#      CANNOT be installed over an older build; use them for first installs only)
+# Key resolution, in order:
+#   1. KEYSTORE_BASE64 secret (+ password/alias secrets) — use it if configured
+#   2. android/ci/release.jks.b64 — a fixed development key committed to the repo,
+#      so every CI build is signed identically and can update the previous one
+#   3. neither → assembleDebug + a loud warning (the runner generates a fresh
+#      debug.keystore each run, so such builds cannot be installed over an older
+#      build; use them for first installs only)
 #
 # The rolling "latest" release publishes route-spoofer.apk + latest.json. The app
 # reads latest.json (versionCode / versionName / sha256 / url) to decide whether
@@ -62,11 +64,25 @@ jobs:
               echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}"
             } >> "$GITHUB_ENV"
             echo "mode=release" >> "$GITHUB_OUTPUT"
-            echo "Signing with the repository's release key."
+            echo "Signing with the release key from repository secrets."
+          elif [ -f android/ci/release.jks.b64 ]; then
+            base64 -d android/ci/release.jks.b64 > "$KS"
+            {
+              echo "KEYSTORE_PATH=$KS"
+              echo "KEYSTORE_PASSWORD=tcjxlsyv94rn2mdq0e68gozpu1ikh5b3"
+              echo "KEY_ALIAS=routespoofer"
+              echo "KEY_PASSWORD=tcjxlsyv94rn2mdq0e68gozpu1ikh5b3"
+            } >> "$GITHUB_ENV"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "Signing with the fixed development key committed in android/ci."
           else
-            echo "::warning title=Unstable signature::KEYSTORE_BASE64 is not set, so this build is debug-signed with a throwaway keystore. It can be installed as a first install but future builds will NOT install over it. Set KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD to enable self-updates."
+            echo "::warning title=Unstable signature::No keystore found (neither KEYSTORE_BASE64 nor android/ci/release.jks.b64), so this build is debug-signed with a throwaway keystore. It can be installed as a first install but future builds will NOT install over it."
             echo "mode=debug" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Validate signing key
+        if: steps.signing.outputs.mode == 'release'
+        run: keytool -list -keystore "$KEYSTORE_PATH" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null
 
       # ---- Quality gate: lint + static analysis + unit tests run BEFORE the
       # build. If any check fails the job stops here, so no APK is uploaded and
