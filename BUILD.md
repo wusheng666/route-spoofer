@@ -157,10 +157,12 @@ dependency. The app is sideloaded, so it updates itself from this repository's
 rolling **`latest`** release:
 
 1. On start (and throttled to once per 6 h) the web layer fetches
-   `https://api.github.com/repos/<owner>/<repo>/releases/tags/latest`, finds the
-   **`latest.json`** asset and reads
-   `{ versionCode, versionName, sha256, url }` from it. Reading the manifest
-   through the API (instead of a CDN URL) avoids stale cached responses.
+   `https://api.github.com/repos/<owner>/<repo>/releases/tags/latest` and parses
+   the manifest `{ versionCode, versionName, sha256, url }` from the **release
+   body** (release assets are served without CORS headers, so a WebView cannot
+   fetch the `latest.json` asset directly — it is published anyway for plain HTTP
+   clients and as a fallback). Reading through the API also avoids CDN cache
+   staleness.
 2. If `versionCode` is greater than the installed one, a banner appears above the
    deck: **Download** / **Later**. *Later* hides it for this session.
 3. **Download** hands the APK URL to the native `AppUpdater` plugin

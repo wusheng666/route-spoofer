@@ -2940,11 +2940,18 @@ async function checkForAppUpdate(){
     const relRes = await fetch(UPDATE_API, { cache:'no-store' });
     if(!relRes.ok) throw new Error('HTTP '+relRes.status);
     const rel = await relRes.json();
-    const asset = (rel.assets || []).find(a=>a.name === 'latest.json');
-    if(!asset) throw new Error('manifest missing');
-    const res = await fetch(asset.browser_download_url, { cache:'no-store' });
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const info = await res.json();
+    // The manifest is the release body: GitHub serves release assets without
+    // CORS headers, so a WebView cannot fetch latest.json directly. The asset is
+    // still published for plain HTTP clients, hence the fallback.
+    let info = null;
+    try{ info = JSON.parse((rel.body || '').trim()); }catch(e){}
+    if(!info || !info.url){
+      const asset = (rel.assets || []).find(a=>a.name === 'latest.json');
+      if(!asset) throw new Error('manifest missing');
+      const res = await fetch(asset.browser_download_url, { cache:'no-store' });
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      info = await res.json();
+    }
     try{ localStorage.setItem(UPDATE_CHECK_KEY, String(now)); }catch(e){}
     if(!info || !info.url || !(info.versionCode > me.versionCode)) return;
     updInfo = info;

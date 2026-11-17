@@ -153,6 +153,9 @@ jobs:
           tag_name: latest
           name: "Latest build"
           prerelease: false
+          # The app reads the manifest from the release body: release assets are
+          # served without CORS headers, so a WebView cannot fetch latest.json.
+          body_path: latest.json
           files: |
             route-spoofer.apk
             latest.json
