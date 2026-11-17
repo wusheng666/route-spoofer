@@ -9,7 +9,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>Route Spoofer — fake GPS player</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<!-- Leaflet JS is loaded at runtime as fallback (see initMap()), AMap JS SDK is loaded when a Web端(JS API) key is configured. -->
+
 <style>
   :root{
     --ink:#0D1117; --panel:#161B22; --panel-2:#1C232C;
@@ -41,6 +42,10 @@
   .leaflet-bottom.leaflet-right .leaflet-control-attribution{float:none; display:inline-block; vertical-align:bottom;
     max-width:calc(100% - 16px); white-space:normal}
   .leaflet-control-attribution a{color:var(--route)!important}
+  /* AMap JS SDK attribution — different DOM structure from Leaflet. Same visual treatment. */
+  .amap-logo{opacity:.55!important;}
+  .amap-copyright{background:rgba(13,17,23,.78)!important; color:var(--text)!important; font:500 10px/1.4 var(--sans)!important; padding:2px 7px!important; border-radius:6px 6px 0 0;}
+  .amap-copyright a{color:var(--route)!important}
 
   /* ---------- top status strip ---------- */
   #hud{
@@ -729,7 +734,7 @@
       <button class="helpbtn" id="btnHelp" data-i18n-title="help.title" title="How it works" aria-label="Help">?</button>
     </div>
 
-    <div class="credit">Route Spoofer <span id="appVersion">v1.1.12</span> · by <b>Maxim Popelnitskiy</b> · <span data-i18n="about.qa">Beta-tested via</span> <a class="qa-credit" id="qaLink" href="https://qaprovider.com/" rel="noopener">QAProvider</a></div>
+    <div class="credit">Route Spoofer <span id="appVersion">v1.2.2</span> · by <b>Maxim Popelnitskiy</b> · <span data-i18n="about.qa">Beta-tested via</span> <a class="qa-credit" id="qaLink" href="https://qaprovider.com/" rel="noopener">QAProvider</a></div>
     </div><!-- /#deckBody -->
   </div>
 
@@ -1009,11 +1014,18 @@ function nz(v, d){ return v == null ? d : v; }
    ===================================================================== */
 
 /* ---------- map providers ----------
-   Primary: AMap (高德) raster tiles — keyless and reachable in mainland China.
-   Fallback: OSM standard raster, swapped in only if no AMap tile loads at all.
-   AMap tiles are GCJ-02; the app's route data and injected fixes stay WGS-84 and
-   are converted at the map boundary (see GCJ below), so the route lines up with
-   the basemap instead of being offset by a few hundred metres. */
+   Two modes coexist:
+     • AMap SDK mode — when localStorage['amapJsKey'] is set to a valid 高德
+       Web端(JS API) key. Uses AMap JS SDK as the entire map layer (底图 + 搜索
+       + 地理编码), calls AMap.convertFrom/convertTo for GCJ-02↔WGS-84.
+     • Leaflet fallback — default, keeps the current architecture: Leaflet +
+       keyless AMap raster tiles (GCJ-02) → OSM on failure. Custom GCJ transform
+       below; search falls back to the existing Web 服务 API / Nominatim path.
+   All route data + emitted fixes stay WGS-84 at all times — coordinate
+   conversion only happens at the map display boundary. */
+const MAP_AMAP_JS_KEY = (function(){ try{ return (localStorage.getItem('amapJsKey') || '').trim(); }catch(e){ return ''; } })();
+const USING_AMAP = !!MAP_AMAP_JS_KEY;   // set at load time, immutable after
+const AMAP_JS_SDK_URL = 'https://webapi.amap.com/maps?v=2.0&key=' + encodeURIComponent(MAP_AMAP_JS_KEY);
 const AMAP_TILE_URL = 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}';
 const AMAP_TILE_OPTS = { subdomains:'1234', maxZoom:19, maxNativeZoom:18, attribution:'© <a href="https://www.amap.com/">高德地图</a>' };
 const MAP_RASTER_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -1021,8 +1033,9 @@ const MAP_RASTER_OPTS = { maxZoom:19 };
 const MAP_RASTER_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
 /* ---------- WGS-84 <-> GCJ-02 ----------
-   Both directions of the standard offset transform. Out-of-China coordinates are
-   returned unchanged because the offset only exists inside the Chinese mainland. */
+   Leaflet fallback uses this hand-rolled transform (accurate enough).
+   AMap SDK mode uses AMap.convertFrom(lnglat, 'gps') / .convertTo(..., 'gps')
+   which is the official, precision-checked version — identical behaviour. */
 const GCJ = (function(){
   const PI=Math.PI, A=6378245.0, EE=0.006693421622965943;
   const outOfChina=(lat,lng)=>!(lng>73.66 && lng<135.05 && lat>3.86 && lat<53.55);
@@ -1057,8 +1070,10 @@ const GCJ = (function(){
   }
   return { wgs2gcj:wgs2gcj, gcj2wgs:gcj2wgs };
 })();
-const toMapLL = (lat,lng) => { const g=GCJ.wgs2gcj(lat,lng); return [g[0],g[1]]; };
-const fromMapLL = ll => { const w=GCJ.gcj2wgs(ll.lat,ll.lng); return L.latLng(w[0],w[1]); };
+
+/* Branch-aware coordinate helpers — every call site below uses these,
+   so switching between AMap SDK and Leaflet is entirely contained here. */
+let toMapLL, fromMapLL;
 
 /* ---------- Capacitor / native plugin handles ---------- */
 const Cap = window.Capacitor;
@@ -1079,7 +1094,7 @@ const AppUpdater = isNative && Cap.Plugins && Cap.getPlatform && Cap.getPlatform
    Brand name "Route Spoofer" stays untranslated in every locale.
    Note: Chinese (zh) and Hindi (hi) are machine translations pending review.
    ===================================================================== */
-const GITHUB_URL = 'https://github.com/Gegirhasut/route-spoofer';
+const GITHUB_URL = 'https://github.com/wusheng666/route-spoofer';
 const I18N = {
   en: {
     'state.ready':'Ready','state.emitting':'Emitting','state.paused':'Paused',
@@ -1612,100 +1627,205 @@ async function openExternal(url){
 }
 function openGithub(){ return openExternal(GITHUB_URL); }
 
-/* ---------- map ---------- */
-const DEFAULT_CENTER = [39.9087, 116.3975];   // default startup center (Tiananmen, Beijing — AMap has no overseas detail)
-const map = L.map('map', { zoomControl:false, attributionControl:true });
-map.attributionControl.setPrefix(false);          // remove the Leaflet flag prefix
+/* ---------- map ----------
+   initMap() is called once at boot. It loads exactly one mapping library
+   (AMap JS SDK if MAP_AMAP_JS_KEY is set, otherwise Leaflet), wires up the
+   basemap + coordinate helpers + event listeners, and resolves `mapReady`. */
+const DEFAULT_CENTER = [39.9087, 116.3975];   // default startup centre (Tiananmen — AMap has no overseas detail)
+let map = null;                                // assigned inside initMap()
+const mapReady = new Promise(res => { window.addEventListener('DOMContentLoaded', () => initMap().then(res)); });
 
-/* ---------- basemap: AMap raster with OSM fallback ----------
-   Exactly one basemap is on the map at a time. AMap serves GCJ-02 tiles, so it is
-   paired with the coordinate conversion above. If not a single AMap tile loads
-   (network/region block), swap in the OSM raster so the map is never blank. */
-let basemap = null;
-function useOsmBasemap(){
-  basemap = L.tileLayer(MAP_RASTER_URL, Object.assign({ attribution: MAP_RASTER_ATTRIBUTION }, MAP_RASTER_OPTS)).addTo(map);
-  console.info('[map] basemap: OSM raster (fallback)');
-}
-function installBasemap(){
-  let loaded = 0, failed = 0;
-  const layer = L.tileLayer(AMAP_TILE_URL, AMAP_TILE_OPTS);
-  layer.on('tileload', () => { loaded++; });
-  layer.on('tileerror', () => {
-    if(loaded > 0 || basemap !== layer) return;      // one bad tile is not a dead provider
-    if(++failed < 6) return;
-    console.warn('[map] AMap tiles unavailable, falling back to OSM');
-    try{ map.removeLayer(layer); }catch(e){ console.warn('[map] basemap removal failed', e); }
-    useOsmBasemap();
+/* ---------- async library loader ----------
+   injects one <script> tag, waits for the global to appear, returns it.
+   On failure we always finish with Leaflet — the tile fallback chain there
+   is mature and fully functional without a key. */
+function _loadScript(url, globalName){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url; s.async = false; s.defer = false;
+    s.onerror = () => reject(new Error('script load failed: ' + url));
+    const start = Date.now();
+    s.onload = () => {
+      const tick = () => {
+        if(window[globalName]) resolve(window[globalName]);
+        else if(Date.now() - start > 8000) reject(new Error(globalName + ' not loaded'));
+        else setTimeout(tick, 30);
+      };
+      tick();
+    };
+    document.head.appendChild(s);
   });
-  layer.addTo(map);
-  basemap = layer;
-  console.info('[map] basemap: AMap raster');
 }
-map.whenReady(installBasemap);
+
+async function initMap(){
+  try{
+    if(USING_AMAP){
+      try{ await _loadScript(AMAP_JS_SDK_URL, 'AMap'); await _initAmap(); }
+      catch(e){
+        console.warn('[map] AMap SDK failed, falling back to Leaflet', e);
+        await _loadLeaflet();
+      }
+    } else {
+      await _loadLeaflet();
+    }
+    // coordinate helpers are now branch-aware
+    if(USING_AMAP && window.AMap){
+      toMapLL = (lat,lng) => {
+        const r = AMap.convertFrom([lng, lat], 'gps');
+        return r ? [r.lat, r.lng] : GCJ.wgs2gcj(lat,lng);   // fall back if SDK fails
+      };
+      fromMapLL = ll => {
+        const r = AMap.convertTo([ll.lng, ll.lat], 'gps');
+        if(r) return { lat: r.lat, lng: r.lng };
+        const w = GCJ.gcj2wgs(ll.lat, ll.lng);
+        return { lat: w[0], lng: w[1] };
+      };
+    } else {
+      toMapLL = (lat,lng) => { const g=GCJ.wgs2gcj(lat,lng); return [g[0],g[1]]; };
+      fromMapLL = ll => { const w=GCJ.gcj2wgs(ll.lat,ll.lng); return { lat:w[0], lng:w[1] }; };
+    }
+    centerOnMap(DEFAULT_CENTER, 13, false);
+    console.info('[map] library:', USING_AMAP ? 'AMap JS SDK' : 'Leaflet');
+  }catch(e){ console.error('[map] init failed', e); }
+}
+
+async function _loadLeaflet(){
+  await _loadScript('https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js', 'L');
+  map = L.map('map', { zoomControl:false, attributionControl:true });
+  map.attributionControl.setPrefix(false);
+  // basemap install (AMap raster → OSM fallback, unchanged)
+  let basemap = null;
+  function useOsmBasemap(){
+    basemap = L.tileLayer(MAP_RASTER_URL, Object.assign({ attribution: MAP_RASTER_ATTRIBUTION }, MAP_RASTER_OPTS)).addTo(map);
+    console.info('[map] basemap: OSM raster (fallback)');
+  }
+  function installBasemap(){
+    let loaded=0, failed=0;
+    const layer=L.tileLayer(AMAP_TILE_URL, AMAP_TILE_OPTS);
+    layer.on('tileload',()=>{ loaded++; });
+    layer.on('tileerror',()=>{
+      if(loaded>0 || basemap!==layer) return;
+      if(++failed<6) return;
+      console.warn('[map] AMap tiles unavailable, falling back to OSM');
+      try{ map.removeLayer(layer); }catch(e){}
+      useOsmBasemap();
+    });
+    layer.addTo(map); basemap=layer;
+    console.info('[map] basemap: AMap raster');
+  }
+  map.whenReady(installBasemap);
+  // Leaflet-specific events (click set up later via _setupMapClickHandlers to satisfy definition order)
+  map.on('moveend', _onMoveEndLeaflet);
+}
+
+async function _initAmap(){
+  // AMap.Map creates the basemap automatically — no tile layer management needed.
+  map = new AMap.Map('map', {
+    zoom: 13,
+    center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
+    viewMode: '2D',
+    features: ['bg','road','building','point'],
+    showLabel: true,
+  });
+  // hide default zoom/scale controls — we have our own overlay UI
+  map.removeControl(map.getControl('AMap.Zoom'));
+  map.removeControl(map.getControl('AMap.Scale'));
+  // AMap attribution is inside AMapBar control; just ensure it's visible + styled
+  map.addControl(new AMap.Control.Bar({ position: 'LB' }));
+  // AMap events
+  map.on('moveend', _onMoveEndAmap);
+  // click set up later via _setupMapClickHandlers
+  console.info('[map] basemap: AMap SDK (native tiles)');
+}
 
 /* ---------- inset-aware centering ----------
-   #map is a full-viewport overlay (Leaflet always sees the whole screen), while the
-   bottom deck and the top hud/search bar paint over it — so the geometric centre lands
-   UNDER the deck. Measure the live occluded heights at call time (auto-reflects the
-   collapsed/expanded deck + safe areas) and centre the target inside the VISIBLE band
-   via fitBounds padding (setView/panTo have no padding in Leaflet 1.9.4). */
+   Pure DOM measurement — identical for both map libraries. The padding values
+   are applied differently per library (fitBounds with padding vs setFitView
+   + AMap padding option), see the per-branch functions below. */
 function mapInsets(){
   const rect = id => { const el = document.getElementById(id); return el ? el.getBoundingClientRect() : null; };
   const deck = rect('deck'), hud = rect('hud'), search = rect('searchBar');
   const bottom = deck ? deck.height : 0;
-  // Top occlusion = the lowest bottom-edge among the top overlays. The search bar sits
-  // below the hud, so it usually defines the real occluded top height.
   const top = Math.max(0, hud ? hud.bottom : 0, search ? search.bottom : 0);
   return { top, bottom };
 }
-// Centre a single point in the un-occluded band at [zoom]. Degenerate bounds + maxZoom
-// pins the zoom exactly (15 for My-location, 13 for search), and the inset padding lifts
-// the point above the deck.
-// Every input here is WGS-84 (route data, fixes, search hits); the basemap is GCJ-02.
+// Convert a WGS point into whatever the current map library expects as a map coord.
 function wgsLatLng(p){
   const lat = (p.lat!=null) ? p.lat : p[0], lng = (p.lng!=null) ? p.lng : p[1];
   const g = toMapLL(+lat, +lng);
-  return L.latLng(g[0], g[1]);
+  if(USING_AMAP) return new AMap.LngLat(g[1], g[0]);   // AMap LngLat(lng, lat)  — NOT [lng,lat] order
+  return L.latLng(g[0], g[1]);                         // Leaflet LatLng(lat, lng)
 }
 function centerOnMap(latlng, zoom, animate){
-  const { top, bottom } = mapInsets();
+  if(!map) return;
   const ll = wgsLatLng(latlng);
-  map.fitBounds(L.latLngBounds(ll, ll), {
-    maxZoom: zoom,
-    paddingTopLeft: L.point(0, top),
-    paddingBottomRight: L.point(0, bottom),
-    animate: !!animate,
-  });
+  if(USING_AMAP){
+    map.setZoomAndCenter(zoom, ll, !!animate);
+  } else {
+    const { top, bottom } = mapInsets();
+    map.fitBounds(L.latLngBounds(ll, ll), {
+      maxZoom: zoom,
+      paddingTopLeft: L.point(0, top),
+      paddingBottomRight: L.point(0, bottom),
+      animate: !!animate,
+    });
+  }
 }
-// Fit a whole route inside the visible band (same insets, plus geographic breathing room).
 function fitRouteOnMap(latlngs, animate){
-  if(!latlngs || !latlngs.length) return;
-  const { top, bottom } = mapInsets();
-  map.fitBounds(L.latLngBounds(latlngs.map(wgsLatLng)).pad(.3), {
-    paddingTopLeft: L.point(0, top),
-    paddingBottomRight: L.point(0, bottom),
-    animate: !!animate,
-  });
+  if(!map || !latlngs || !latlngs.length) return;
+  const pts = latlngs.map(wgsLatLng);
+  if(USING_AMAP){
+    // AMap.setBounds doesn't accept inset padding — we compute the WGS→GCJ box
+    // ourselves and expand it 30% for breathing room. Insets are ignored here.
+    let minLat=90, maxLat=-90, minLng=180, maxLng=-180;
+    latlngs.forEach(p => {
+      const g = toMapLL(+p.lat, +p.lng);
+      if(g[0]<minLat) minLat=g[0];
+      if(g[0]>maxLat) maxLat=g[0];
+      if(g[1]<minLng) minLng=g[1];
+      if(g[1]>maxLng) maxLng=g[1];
+    });
+    // add 30% breathing room around the box
+    const latPad=(maxLat-minLat)*.15, lngPad=(maxLng-minLng)*.15;
+    map.setBounds(new AMap.Bounds(
+      new AMap.LngLat(minLng-lngPad, minLat-latPad),
+      new AMap.LngLat(maxLng+lngPad, maxLat+latPad)
+    ), !!animate);
+  } else {
+    const { top, bottom } = mapInsets();
+    map.fitBounds(L.latLngBounds(pts).pad(.3), {
+      paddingTopLeft: L.point(0, top),
+      paddingBottomRight: L.point(0, bottom),
+      animate: !!animate,
+    });
+  }
 }
-// The latlng currently shown at the centre of the VISIBLE band — this is what we persist
-// and restore (via centerOnMap), so a saved view re-centres the same point and never
-// drifts, whatever the deck state was when it was saved.
 function visibleCenterLatLng(){
-  const { top, bottom } = mapInsets();
-  const size = map.getSize();
-  const ll = map.containerPointToLatLng(L.point(size.x / 2, top + (size.y - top - bottom) / 2));
-  const w = GCJ.gcj2wgs(ll.lat, ll.lng);   // persisted view is WGS-84, like the route
-  return L.latLng(w[0], w[1]);
+  if(!map) return { lat:0, lng:0 };
+  let ll;
+  if(USING_AMAP){
+    ll = map.getCenter();
+  } else {
+    const { top, bottom } = mapInsets();
+    const size = map.getSize();
+    ll = map.containerPointToLatLng(L.point(size.x / 2, top + (size.y - top - bottom) / 2));
+  }
+  const w = fromMapLL(ll);   // fromMapLL already returns WGS {lat, lng} in both branches
+  return { lat:w.lat, lng:w.lng };
 }
 
-centerOnMap(DEFAULT_CENTER, 13, false);   // initial default view (Beijing), inset-aware
+/* branch-aware moveend stubs — wired in _loadLeaflet / _initAmap (click handler is set up later via mapReady.then) */
+let _onMoveEndLeaflet = null, _onMoveEndAmap = null;
 
 /* remember the last map view (the visible-band centre + zoom), independent of the route */
 const MAPVIEW_KEY = 'rsMapView';
 let mapViewRestored = false, mapViewTimer = null;
-map.on('moveend', () => { clearTimeout(mapViewTimer); mapViewTimer = setTimeout(() => {
+/* ---------- moveend handler (identical API in both branches) ---------- */
+function _handleMoveEnd(){ clearTimeout(mapViewTimer); mapViewTimer = setTimeout(() => {
   try{ const c = visibleCenterLatLng(); localStorage.setItem(MAPVIEW_KEY, JSON.stringify({ lat:c.lat, lng:c.lng, z:map.getZoom() })); }catch(e){}
-}, 400); });
+}, 400); }
+_onMoveEndLeaflet = _handleMoveEnd;
+_onMoveEndAmap = _handleMoveEnd;
 function restoreMapView(){
   try{ const v = JSON.parse(localStorage.getItem(MAPVIEW_KEY)||'null');
     if(v && isFinite(v.lat) && isFinite(v.lng)){ centerOnMap([v.lat, v.lng], v.z||12, false); return true; }
@@ -1815,43 +1935,103 @@ function recompute(){
   syncTools();
   paintHud();
 }
+/* ---------- route polyline (AMap vs Leaflet branch) ---------- */
 function drawRoute(){
-  if(S.polyline) S.polyline.remove();
-  if(S.polylineCasing) S.polylineCasing.remove();
-  if(S.waypoints.length>1){
-    const pts=S.waypoints.map(p=>toMapLL(p.lat,p.lng));
-    // dark casing under the dotted teal keeps the route legible on light tiles (incl. over water)
-    S.polylineCasing=L.polyline(pts,{color:'#0a2230',weight:6,opacity:.35,lineCap:'round',interactive:false}).addTo(map);
-    S.polyline=L.polyline(pts,{color:getCSS('--route'),weight:4,opacity:1,dashArray:'1 9',lineCap:'round'}).addTo(map);
-  } else { S.polyline=null; S.polylineCasing=null; }
+  if(S.polyline){ try{ S.polyline.setMap ? S.polyline.setMap(null) : S.polyline.remove(); }catch(e){} }
+  if(S.polylineCasing){ try{ S.polylineCasing.setMap ? S.polylineCasing.setMap(null) : S.polylineCasing.remove(); }catch(e){} }
+  if(S.waypoints.length<=1){ S.polyline=null; S.polylineCasing=null; return; }
+  const ptsWgs = S.waypoints.map(p=>toMapLL(p.lat,p.lng));   // GCJ-02 [lat, lng] in both branches
+  if(USING_AMAP){
+    // AMap uses [lng, lat] order, polyline doesn't support dashArray natively → strokeDasharray
+    const toAmapPts = ptsWgs.map(p => new AMap.LngLat(p[1], p[0]));
+    S.polylineCasing = new AMap.Polyline({
+      path: toAmapPts, strokeColor:'#0a2230', strokeWeight:6, strokeOpacity:0.35,
+      strokeStyle:'solid', lineJoin:'round', lineCap:'round', zIndex:50
+    });
+    S.polyline = new AMap.Polyline({
+      path: toAmapPts, strokeColor:getCSS('--route'), strokeWeight:4, strokeOpacity:1,
+      strokeStyle:'dashed', strokeDasharray:[1,9], lineJoin:'round', lineCap:'round', zIndex:51
+    });
+    S.polylineCasing.setMap(map); S.polyline.setMap(map);
+  } else {
+    S.polylineCasing=L.polyline(ptsWgs,{color:'#0a2230',weight:6,opacity:.35,lineCap:'round',interactive:false}).addTo(map);
+    S.polyline=L.polyline(ptsWgs,{color:getCSS('--route'),weight:4,opacity:1,dashArray:'1 9',lineCap:'round'}).addTo(map);
+  }
 }
-const wpLabel = i => String.fromCharCode(65+i);            // A, B, C…
-function wpIcon(i){
+const wpLabel = i => String.fromCharCode(65+i);
+function _wpHtml(i){
   const n=S.waypoints.length;
   const cls = i===0?'wp start' : i===n-1&&n>1?'wp end' : 'wp';
-  return L.divIcon({className:'', html:`<div class="${cls}"><b>${wpLabel(i)}</b></div>`, iconSize:[24,24], iconAnchor:[12,12]});
+  return `<div class="${cls}"><b>${wpLabel(i)}</b></div>`;
 }
+/* ---------- waypoint markers ---------- */
 function refreshMarkers(){
-  S.markers.forEach(m=>m.remove()); S.markers=[];
+  // remove existing (AMap uses setMap(null), Leaflet uses remove())
+  S.markers.forEach(m=>{ try{ m.setMap ? m.setMap(null) : m.remove(); }catch(e){} });
+  S.markers=[];
   S.waypoints.forEach((p,i)=>{
-    // every waypoint is always editable — draggable any time (the engine keeps
-    // the driver's current position continuous when geometry behind it changes)
-    const m=L.marker(toMapLL(p.lat,p.lng),{icon:wpIcon(i),draggable:!S.locked,zIndexOffset:1000}).addTo(map);
+    let m;
+    if(USING_AMAP){
+      m = new AMap.Marker({
+        position: toMapLL(p.lat,p.lng).reverse(),   // [lng, lat] for AMap
+        content: _wpHtml(i),
+        offset: new AMap.Pixel(-12, -12),
+        draggable: !S.locked,
+        zIndex: 1000,
+        cursor: !S.locked ? 'move' : 'default'
+      });
+      m.setMap(map);
+    } else {
+      m = L.marker(toMapLL(p.lat,p.lng),{
+        icon:L.divIcon({className:'', html:_wpHtml(i), iconSize:[24,24], iconAnchor:[12,12]}),
+        draggable:!S.locked, zIndexOffset:1000
+      }).addTo(map);
+    }
     let dragPos=null;
-    m.on('drag',e=>{ const w=fromMapLL(e.target.getLatLng()); S.waypoints[i].lat=w.lat; S.waypoints[i].lng=w.lng; const pts=S.waypoints.map(q=>toMapLL(q.lat,q.lng)); if(S.polyline) S.polyline.setLatLngs(pts); if(S.polylineCasing) S.polylineCasing.setLatLngs(pts); });
-    m.on('dragend',()=>{ recompute();
+    const onDrag = e => {
+      const ll = USING_AMAP ? e.lnglat : e.target.getLatLng();
+      const w = fromMapLL(ll);
+      S.waypoints[i].lat=w.lat; S.waypoints[i].lng=w.lng;
+      if(S.polyline){
+        const pts = S.waypoints.map(q=>toMapLL(q.lat,q.lng));
+        if(USING_AMAP){
+          const amapPts = pts.map(p => new AMap.LngLat(p[1], p[0]));
+          S.polyline.setPath(amapPts); S.polylineCasing && S.polylineCasing.setPath(amapPts);
+        } else {
+          S.polyline.setLatLngs(pts); if(S.polylineCasing) S.polylineCasing.setLatLngs(pts);
+        }
+      }
+    };
+    const onDragEnd = () => {
+      recompute();
       if(S.gpsOn && isNative){ FakeGps.moveWaypoint({index:i,lat:S.waypoints[i].lat,lng:S.waypoints[i].lng}).catch(()=>{}); }
       else if(dragPos){ previewReanchor(dragPos); }
-      dragPos=null; persist(); });
-    // long-press (550 ms) or right-click opens the per-waypoint menu
+      dragPos=null; persistSoon();
+    };
+    // drag events (different names in AMap vs Leaflet)
+    if(USING_AMAP){
+      m.on('dragging', onDrag);
+      m.on('dragend', onDragEnd);
+    } else {
+      m.on('drag', onDrag);
+      m.on('dragend', onDragEnd);
+    }
+    // long-press / right-click menu + dragstart (same in both)
     let timer=null;
     const startPress=()=>{ timer=setTimeout(()=>openWpMenu(i), 550); };
     const cancelPress=()=>{ if(timer){ clearTimeout(timer); timer=null; } };
-    m.on('mousedown',startPress); m.on('touchstart',startPress);
-    m.on('dragstart',()=>{ dragPos=(!isNative&&S.gpsOn)?PV.worldPos():null; cancelPress(); });
-    m.on('mouseup',cancelPress); m.on('touchend',cancelPress); m.on('move',cancelPress);
-    m.on('contextmenu',()=>openWpMenu(i));
-    m.bindTooltip(wpLabel(i),{direction:'top',offset:[0,-12],opacity:.9});
+    if(USING_AMAP){
+      m.on('mousedown',startPress); m.on('touchstart',startPress);
+      m.on('dragstart',()=>{ dragPos=(!isNative&&S.gpsOn)?PV.worldPos():null; cancelPress(); });
+      m.on('mouseup',cancelPress); m.on('touchend',cancelPress); m.on('mousemove',cancelPress);
+      m.on('rightclick',()=>openWpMenu(i));
+    } else {
+      m.on('mousedown',startPress); m.on('touchstart',startPress);
+      m.on('dragstart',()=>{ dragPos=(!isNative&&S.gpsOn)?PV.worldPos():null; cancelPress(); });
+      m.on('mouseup',cancelPress); m.on('touchend',cancelPress); m.on('move',cancelPress);
+      m.on('contextmenu',()=>openWpMenu(i));
+      m.bindTooltip(wpLabel(i),{direction:'top',offset:[0,-12],opacity:.9});
+    }
     S.markers.push(m);
   });
 }
@@ -1875,10 +2055,23 @@ function removeWaypoint(i){
 // A map tap while the control deck is up lowers the deck instead of dropping a point,
 // so reaching for the map to get the panel out of the way can't litter the route with
 // accidental waypoints. The next tap (deck down) adds the point as usual.
-map.on('click', e=>{
+/* ---------- click handler for adding waypoints ----------
+   Leaflet fires click with e.latlng (LatLng(lat, lng) — GCJ-02 because basemap is GCJ).
+   AMap fires click with e.lnglat (LngLat(lng, lat) — always GCJ-02).
+   fromMapLL converts GCJ → WGS in both branches. */
+const _addWpOnClick = llGcj => {
   if(S.locked) return;
   if(!document.body.classList.contains('deck-collapsed')){ setDeckCollapsed(true); refreshHint(); return; }
-  addWaypoint(fromMapLL(e.latlng));   // tap is GCJ-02; the route is stored WGS-84
+  addWaypoint(fromMapLL(llGcj));
+};
+// Wire click handler after init (satisfies definition order since addWaypoint is declared above).
+mapReady.then(() => {
+  if(!map) return;
+  if(USING_AMAP){
+    map.on('click', e => _addWpOnClick({ lat:e.lnglat.getLat(), lng:e.lnglat.getLng() }));
+  } else {
+    map.on('click', e => _addWpOnClick(e.latlng));
+  }
 });
 
 /* ---------- unified render: a normalized drive snapshot -> pill + marker + HUD ---------- */
@@ -2102,18 +2295,41 @@ function applyNativeFix(f){
   if(f.gpsOn) logFix({ lat:f.lat, lng:f.lng, speedKmh:f.speedKmh, bearing:Math.round(f.bearing||0), timestamp:Date.now() });
 }
 /* ---------- the EMITTER (moving marker) ---------- */
+/* ---------- the EMITTER (moving marker) ---------- */
+function _emitHtml(brg){ return `<div class="emitter"><span class="bearing" style="transform:rotate(${brg}deg)"></span><i></i></div>`; }
 function ensureEmitter(){
   const f=sampleAt(S.traveled); if(!f) return;
-  if(S.emitMarker) S.emitMarker.remove();
-  const el=L.divIcon({className:'',html:'<div class="emitter"><span class="bearing"></span><i></i></div>',iconSize:[18,18],iconAnchor:[9,9]});
-  S.emitMarker=L.marker(toMapLL(f.lat,f.lng),{icon:el,zIndexOffset:5000,interactive:false}).addTo(map);
+  // remove old
+  if(S.emitMarker){ try{ S.emitMarker.setMap ? S.emitMarker.setMap(null) : S.emitMarker.remove(); }catch(e){} }
+  if(USING_AMAP){
+    S.emitMarker = new AMap.Marker({
+      position: toMapLL(f.lat,f.lng).reverse(),   // [lng, lat]
+      content: _emitHtml(f.brg||0),
+      offset: new AMap.Pixel(-9, -9),
+      zIndex: 5000,
+      cursor: 'default'
+    });
+    S.emitMarker.setMap(map);
+  } else {
+    const el=L.divIcon({className:'',html:_emitHtml(f.brg||0),iconSize:[18,18],iconAnchor:[9,9]});
+    S.emitMarker=L.marker(toMapLL(f.lat,f.lng),{icon:el,zIndexOffset:5000,interactive:false}).addTo(map);
+  }
 }
 function moveEmitter(fix){
   if(!fix) return;
   if(!S.emitMarker) ensureEmitter();
-  S.emitMarker.setLatLng(toMapLL(fix.lat,fix.lng));
-  const mEl=S.emitMarker.getElement(); const b=mEl && mEl.querySelector('.bearing');
-  if(b) b.style.transform=`rotate(${fix.brg}deg)`;
+  const pos = USING_AMAP
+    ? toMapLL(fix.lat,fix.lng).reverse()                        // [lng, lat]
+    : toMapLL(fix.lat,fix.lng);                                 // [lat, lng]
+  if(USING_AMAP){
+    S.emitMarker.setPosition(pos);
+    // AMap marker.setContent accepts an HTML string — we rebuild to embed the bearing rotation
+    S.emitMarker.setContent(_emitHtml(fix.brg||0));
+  } else {
+    S.emitMarker.setLatLng(pos);
+    const mEl=S.emitMarker.getElement(); const b=mEl && mEl.querySelector('.bearing');
+    if(b) b.style.transform=`rotate(${fix.brg}deg)`;
+  }
 }
 
 /* ---------- HUD paint (static / standing) — live driving uses paintLive ---------- */
@@ -2138,11 +2354,15 @@ const fmtTime=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(Math.floo
 
 /* ---------- emit log ---------- */
 function logFix(o){
+  if(!o || typeof o !== 'object') return;
+  if(o.lat == null || o.lng == null) return;
   S.emitCount++; document.getElementById('logCount').textContent=S.emitCount;
   const wrap=document.getElementById('logwrap');
   const line=document.createElement('div'); line.className='logline';
-  const t=new Date(o.timestamp).toLocaleTimeString('en-GB',{hour12:false});
-  line.innerHTML=`<span class="t">${t}</span>  ${o.lat.toFixed(6)}, ${o.lng.toFixed(6)}  ·  ${o.speedKmh}km/h ${o.bearing}°`;
+  const t=new Date(o.timestamp || Date.now()).toLocaleTimeString('en-GB',{hour12:false});
+  const spd = o.speedKmh != null ? o.speedKmh : 0;
+  const brg = o.bearing != null ? Math.round(o.bearing) : 0;
+  line.innerHTML=`<span class="t">${t}</span>  ${(+o.lat).toFixed(6)}, ${(+o.lng).toFixed(6)}  ·  ${spd}km/h ${brg}°`;
   wrap.prepend(line);
   while(wrap.children.length>40) wrap.lastChild.remove();
 }
@@ -2172,7 +2392,7 @@ $('loopSeg').onclick=e=>{ const b=e.target.closest('button'); if(!b)return;
 
 // Route-building tools work while NOT broadcasting (live tail edits use tap / the waypoint menu).
 $('undo').onclick=()=>{ if(S.gpsOn||!S.waypoints.length)return; S.waypoints.pop(); refreshMarkers(); recompute(); persist(); };
-$('clear').onclick=()=>{ if(S.gpsOn)return; clearRoute(); };
+$('clear').onclick=clearRoute;     // clearRoute() already calls pressStop() internally — consistent with the floating map button
 $('mapClear').onclick=clearRoute;
 $('reverse').onclick=()=>{ if(S.gpsOn||S.waypoints.length<2)return; S.waypoints.reverse(); refreshMarkers(); recompute(); persist(); };
 $('lock').onclick=toggleLock;
@@ -2403,8 +2623,17 @@ function hideHint(){ clearTimeout(hintTimer); $('hint').style.opacity='0'; }
 function refreshHint(){ if(S.waypoints.length===0) showHint(); else hideHint(); }
 
 /* ---------- persistence ---------- */
-function persist(){ try{ localStorage.setItem('routeSpoofer', JSON.stringify({
-  waypoints:S.waypoints, speed:S.speed, mode:S.mode, rateMs:S.rateMs, loop:S.loop })); }catch(e){} }
+function persist(){
+  try{
+    localStorage.setItem('routeSpoofer', JSON.stringify({
+      waypoints:S.waypoints, speed:S.speed, mode:S.mode, rateMs:S.rateMs, loop:S.loop
+    }));
+  }catch(e){}
+}
+let persistTimer=null;
+function persistSoon(){
+  clearTimeout(persistTimer); persistTimer=setTimeout(persist, 100);
+}
 function restore(){
   try{
     const d=JSON.parse(localStorage.getItem('routeSpoofer')||'null'); if(!d)return;
@@ -2415,10 +2644,16 @@ function restore(){
     $('rate').value=S.rateMs/1000; $('rateVal').textContent=(S.rateMs/1000).toFixed(1)+' s'; $('liveRate').textContent=(S.rateMs/1000).toFixed(1)+'s';
     syncLoopUI();
     if(Array.isArray(d.waypoints)&&d.waypoints.length){
-      S.waypoints=d.waypoints.map(p=>({lat:p.lat,lng:p.lng,dwell:p.dwell||'none',dwellMin:p.dwellMin||2,legSpeed:(p.legSpeed!=null)?p.legSpeed:null}));
+      // validate every point the same way the import path does — localStorage can
+      // get corrupted by a bad restore, an older version, or a manual edit.
+      S.waypoints=d.waypoints.filter(validPoint).map(p=>({
+        lat:+p.lat, lng:+p.lng, dwell:p.dwell||'none',
+        dwellMin:p.dwellMin||2, legSpeed:(p.legSpeed!=null)?p.legSpeed:null
+      }));
       refreshMarkers(); recompute();
       if(!mapViewRestored) fitRouteOnMap(S.waypoints.map(p=>[p.lat,p.lng]), false);
-      hideHint(); }
+      hideHint();
+    }
   }catch(e){}
 }
 
@@ -2613,9 +2848,14 @@ function setDeckCollapsed(collapsed, save){
 function syncAttributionInset(){
   const deck=$('deck'); if(!deck) return;
   const h=deck.offsetHeight;
+  // Leaflet attribution
   document.querySelectorAll('#map .leaflet-bottom').forEach(el=>{ el.style.bottom=h+'px'; });
-  // the update banner stacks above the attribution, which sits right on the deck
-  const ub=$('updBanner'), attr=document.querySelector('#map .leaflet-control-attribution');
+  // AMap SDK attribution (amap-copyright + amap-logo float at the bottom)
+  document.querySelectorAll('#map .amap-copyright, #map .amap-logo').forEach(el=>{ el.style.bottom=h+'px'; });
+  // the update banner stacks above whatever attribution is visible
+  const ub=$('updBanner');
+  const attr = document.querySelector('#map .leaflet-control-attribution')
+            || document.querySelector('#map .amap-copyright');
   if(ub) ub.style.bottom=(h+(attr?attr.offsetHeight:0)+8)+'px';
 }
 if(typeof ResizeObserver==='function'){ new ResizeObserver(syncAttributionInset).observe($('deck')); }
@@ -2636,12 +2876,16 @@ $('deckGrab').onclick = () => setDeckCollapsed(!document.body.classList.contains
 })();
 
 /* ---------- place / address search ----------
-   AMap geocoding + POI search when a Web-service key is configured; Nominatim
-   otherwise. AMap answers in GCJ-02, so hits are converted to WGS-84 before they
-   reach the route/map state (which always works in WGS-84). */
-const AMAP_WEB_KEY = '289375feb81545ba66c07e00d0a78a15';   // 高德「Web服务」Key：https://console.amap.com/dev/key/app
+   Three sources, priority-ordered:
+     1. AMap JS SDK  PlaceSearch + Geocoder  — when USING_AMAP (no REST key needed)
+     2. AMap Web Service API (restapi.amap.com) — when AMAP_WEB_KEY is set  (Leaflet fallback path)
+     3. Nominatim (OSM) — always available as last resort
+   AMap answers in GCJ-02; the result is converted to WGS-84 before it reaches
+   the route/map state (which always works in WGS-84). */
+const AMAP_WEB_KEY = (function(){ try{ return (localStorage.getItem('amapWebKey') || '289375feb81545ba66c07e00d0a78a15').trim(); }catch(e){ return ''; } })();
 const geocode = (function(){
   let timer = null, inflight = false;
+  // --- Leaflet-fallback REST helpers (Web Service API + Nominatim) ---
   const AMAP_GEO = 'https://restapi.amap.com/v3/geocode/geo';
   const AMAP_POI = 'https://restapi.amap.com/v3/place/text';
   function amapHit(obj){
@@ -2651,7 +2895,7 @@ const geocode = (function(){
     const w = GCJ.gcj2wgs(+p[1], +p[0]);
     return [w[0], w[1]];
   }
-  async function viaAmap(q){
+  async function viaAmapRest(q){
     const key = '?key=' + encodeURIComponent(AMAP_WEB_KEY) + '&output=JSON';
     const urls = [
       AMAP_GEO + key + '&address=' + encodeURIComponent(q),
@@ -2674,12 +2918,38 @@ const geocode = (function(){
     const data = await res.json();
     return (Array.isArray(data) && data.length) ? [+data[0].lat, +data[0].lon] : null;
   }
+  // --- AMap JS SDK mode (preferred, no REST key) ---
+  function viaAmapSdk(q){
+    return new Promise((resolve, reject) => {
+      const search = new AMap.PlaceSearch({ extensions:'base', pageSize:1, pageIndex:1 });
+      search.search(q, (status, result) => {
+        if(status === 'complete' && result.poiList && result.poiList.pois && result.poiList.pois.length){
+          const p = result.poiList.pois[0].location;   // AMap Poi has LatLng .lat .lng (GCJ-02)
+          const w = USING_AMAP
+            ? [fromMapLL({ lat:p.getLat(), lng:p.getLng() }).lat, fromMapLL({ lat:p.getLat(), lng:p.getLng() }).lng]
+            : GCJ.gcj2wgs(p.getLat(), p.getLng());
+          resolve(w);
+        } else {
+          const geo = new AMap.Geocoder();
+          geo.getLocation(q, (status2, result2) => {
+            if(status2 === 'complete' && result2.geocodes && result2.geocodes.length){
+              const g = result2.geocodes[0].location;   // AMap Geocode location is also LatLng (GCJ-02)
+              const w = GCJ.gcj2wgs(g.getLat(), g.getLng());
+              resolve(w);
+            } else reject(new Error('no hit'));
+          });
+        }
+      });
+    });
+  }
+  // --- orchestrator ---
   async function run(q){
     if(!q || inflight) return;
     inflight = true; $('searchBar').classList.add('busy'); flashHint(t('search.searching'));
     try{
       let hit = null;
-      if(AMAP_WEB_KEY){ try{ hit = await viaAmap(q); }catch(e){ console.warn('[search] AMap failed, trying Nominatim', e); } }
+      if(USING_AMAP && window.AMap){ try{ hit = await viaAmapSdk(q); }catch(e){ console.warn('[search] AMap SDK failed', e); } }
+      if(!hit && AMAP_WEB_KEY){ try{ hit = await viaAmapRest(q); }catch(e){ console.warn('[search] AMap REST failed', e); } }
       if(!hit) hit = await viaNominatim(q);
       if(hit){ centerOnMap(hit, 13, true); hideHint(); }
       else flashHint(t('search.notFound'));

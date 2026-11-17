@@ -12,7 +12,8 @@
   "extends": ["eslint:recommended"],
   "globals": {
     "Capacitor": "readonly",
-    "L": "readonly"
+    "L": "readonly",
+    "AMap": "readonly"
   },
   "rules": {
     "no-unused-vars": ["warn", { "args": "none" }],
