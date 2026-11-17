@@ -1,4 +1,19 @@
-name: Android Debug APK
+name: Android APK
+
+# Builds the sideloaded APK on every push / manual dispatch.
+#
+# Signing: self-updates only work if the new APK carries the SAME signing
+# certificate as the installed one. Android treats a differently signed APK as
+# a different app and the installer fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+# So a release build is preferred:
+#   * if the four keystore secrets are set  -> assembleRelease, signed with them
+#   * otherwise                             -> assembleDebug + a loud warning
+#     (the runner generates a fresh debug.keystore on every run, so debug builds
+#      CANNOT be installed over an older build; use them for first installs only)
+#
+# The rolling "latest" release publishes route-spoofer.apk + latest.json. The app
+# reads latest.json (versionCode / versionName / sha256 / url) to decide whether
+# an update exists, then verifies the downloaded file before installing it.
 
 on:
   push:
@@ -34,6 +49,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare signing key
+        id: signing
+        run: |
+          KS="$RUNNER_TEMP/release.jks"
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KS"
+            {
+              echo "KEYSTORE_PATH=$KS"
+              echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
+              echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}"
+              echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}"
+            } >> "$GITHUB_ENV"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "Signing with the repository's release key."
+          else
+            echo "::warning title=Unstable signature::KEYSTORE_BASE64 is not set, so this build is debug-signed with a throwaway keystore. It can be installed as a first install but future builds will NOT install over it. Set KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD to enable self-updates."
+            echo "mode=debug" >> "$GITHUB_OUTPUT"
+          fi
+
       # ---- Quality gate: lint + static analysis + unit tests run BEFORE the
       # build. If any check fails the job stops here, so no APK is uploaded and
       # no "latest" release is published.
@@ -50,20 +84,51 @@ jobs:
           chmod +x ./gradlew
           ./gradlew ktlintCheck detekt test --stacktrace
 
-      - name: Build debug APK
+      - name: Build APK
         run: |
           cd android
-          ./gradlew assembleDebug --stacktrace
+          if [ "${{ steps.signing.outputs.mode }}" = "release" ]; then
+            ./gradlew assembleRelease --stacktrace
+          else
+            ./gradlew assembleDebug --stacktrace
+          fi
+
+      - name: Stage APK under a fixed filename
+        run: |
+          set -e
+          if [ "${{ steps.signing.outputs.mode }}" = "release" ]; then
+            APK=android/app/build/outputs/apk/release/app-release.apk
+          else
+            APK=android/app/build/outputs/apk/debug/app-debug.apk
+          fi
+          test -f "$APK" || { echo "::error::APK missing at $APK"; exit 1; }
+          cp "$APK" route-spoofer.apk
+
+      - name: Write update manifest (latest.json)
+        run: |
+          set -e
+          VCODE=$(grep -oE 'versionCode [0-9]+' android/app/build.gradle | head -1 | grep -oE '[0-9]+')
+          VNAME=$(grep -oE 'versionName "[^"]+"' android/app/build.gradle | head -1 | sed 's/.*"\(.*\)"/\1/')
+          SHA=$(sha256sum route-spoofer.apk | cut -d' ' -f1)
+          cat > latest.json <<JSON
+          {
+            "versionCode": ${VCODE},
+            "versionName": "${VNAME}",
+            "sha256": "${SHA}",
+            "url": "https://github.com/${{ github.repository }}/releases/download/latest/route-spoofer.apk"
+          }
+          JSON
+          echo "versionCode=$VCODE versionName=$VNAME sha256=$SHA"
+          cat latest.json
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: route-spoofer-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: route-spoofer-apk
+          path: |
+            route-spoofer.apk
+            latest.json
           if-no-files-found: error
-
-      - name: Stage APK under a fixed filename
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk route-spoofer.apk
 
       - name: Publish rolling "latest" release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -72,4 +137,6 @@ jobs:
           tag_name: latest
           name: "Latest build"
           prerelease: false
-          files: route-spoofer.apk
+          files: |
+            route-spoofer.apk
+            latest.json

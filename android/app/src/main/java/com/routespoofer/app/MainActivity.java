@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
   public void onCreate(Bundle savedInstanceState) {
     // Register our custom native plugin before the bridge loads the web layer.
     registerPlugin(FakeGpsPlugin.class);
+    registerPlugin(AppUpdaterPlugin.class);
     super.onCreate(savedInstanceState);
     // Launched via "Open with" / a share sheet on a .json route file: read it here, on
     // the native side; the web layer drains it with FakeGps.consumePendingImport().

@@ -17,8 +17,9 @@ SDK for the cloud path.**
 
 ## 1. Cloud build (recommended — zero local Android SDK)
 
-A GitHub Actions workflow (`.github/workflows/android.yml`) builds a
-debug-signed APK on every push and on manual dispatch.
+A GitHub Actions workflow (`.github/workflows/android.yml`) builds the APK on
+every push and on manual dispatch. It signs with the repository keystore when
+the secrets below are set, and falls back to a debug build otherwise.
 
 1. Create a new **empty** GitHub repository (e.g. `route-spoofer`).
 2. Add it as a remote and push (the project is already a local git repo):
@@ -32,8 +33,12 @@ debug-signed APK on every push and on manual dispatch.
 3. Open the repo's **Actions** tab → the **Android Debug APK** run.
    (If it didn't auto-trigger, use **Run workflow** / `workflow_dispatch`.)
 4. When it's green, open the run → **Artifacts** → download
-   **`route-spoofer-debug`**. Inside is **`app-debug.apk`**.
-5. Sideload it onto your phone (see **Phone setup** below).
+   **`route-spoofer-apk`**. Inside are **`route-spoofer.apk`** and
+   **`latest.json`**.
+5. Sideload the APK onto your phone (see **Phone setup** below).
+
+On a push to `main` the same job refreshes the rolling **`latest`** release with
+both files, which is what the in-app updater reads (see section 5).
 
 The GitHub-hosted `ubuntu-latest` runner already ships the Android SDK, so the
 workflow produces a downloadable, installable APK with nothing installed locally.
@@ -92,7 +97,8 @@ When both rows show ✓, tap the big play button.
 - **Lock route** to guard against accidental edits — while locked, map taps and
   point drags are ignored so a stray tap can't add or move points. Tap again to
   unlock. (Routes start unlocked; locking is never automatic.)
-- Set **Speed** (slider/presets), **Emit every** (interval), and **Loop**
+- Set **Speed mode** (walk / run / bike) and fine-tune each mode's m/s value in
+  the **Settings** dialog, plus **Emit every** (interval) and **Loop**
   (Off / Restart / Ping-pong).
 - Press **Play**. Open Google Maps (or any consumer app) — it now follows the
   fake route. The persistent notification shows the mock GPS is active.
@@ -143,29 +149,63 @@ declarations + the `<service>`/activity names in `AndroidManifest.xml`.
 
 ---
 
-## 5. In-app updates
+## 5. In-app updates (GitHub Releases)
 
-The app uses Google Play's **flexible** in-app update flow via
-[`@capawesome/capacitor-app-update`](https://github.com/capawesome-team/capacitor-plugins)
-(pinned 7.2.0, the last line for Capacitor 7):
+Updates do **not** go through Google Play — there is no Play Core / Play Store
+dependency. The app is sideloaded, so it updates itself from this repository's
+rolling **`latest`** release:
 
-- On start and on resume (throttled to once per 6 h) it asks Play whether a newer
-  build exists. If a flexible update is allowed, Play shows its own consent dialog
-  and downloads in the background; the app keeps working.
-- When the download finishes an **Update ready — Restart / Later** banner appears
-  above the deck. *Restart* installs it (asking first if a playback is running and
-  stopping it). *Later* hides it until the next app start. Declining Play's dialog
-  isn't asked again in the same session.
-- Works **only for Play installs**. Sideloaded/debug APKs, devices without Play
-  services, or any error → silently skipped (`console.info` only), no UI.
+1. On start (and throttled to once per 6 h) the web layer fetches
+   `https://api.github.com/repos/<owner>/<repo>/releases/tags/latest`, finds the
+   **`latest.json`** asset and reads
+   `{ versionCode, versionName, sha256, url }` from it. Reading the manifest
+   through the API (instead of a CDN URL) avoids stale cached responses.
+2. If `versionCode` is greater than the installed one, a banner appears above the
+   deck: **Download** / **Later**. *Later* hides it for this session.
+3. **Download** hands the APK URL to the native `AppUpdater` plugin
+   (`android/app/src/main/java/com/routespoofer/app/AppUpdaterPlugin.kt`). It
+   downloads to the app cache, verifies the SHA-256 from the manifest, checks the
+   APK's package name **and signing certificate** against the running app, then
+   opens the system installer through `FileProvider`. Progress is shown in the
+   banner.
+4. The first time, Android asks to allow **Install unknown apps** for Route
+   Spoofer; the app deep-links straight to that settings screen. If a playback is
+   running, it is stopped before installing.
 
-**Testing:** upload a build to *Internal app sharing* (or the internal testing
-track) and install it from that link on a device. Then upload a second build with
-a higher `versionCode` the same way, **but don't install it** — open the older
-app, and Play offers the update. Internal app sharing needs "Internal app sharing"
-enabled in the Play Store app (Settings → tap *Play Store version* 7× →
-Internal app sharing). It can take a few minutes, or a Play Store cache clear, for
-the update to show up.
+### Signing requirements (important)
+
+The downloaded APK must be signed with the **same key** as the installed app,
+otherwise Android refuses the update (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`).
+Two consequences:
+
+- **Set the four repository secrets** (Settings → Secrets and variables →
+  Actions), used by `android.yml` and `release.yml`:
+
+  | Secret | Value |
+  | --- | --- |
+  | `KEYSTORE_BASE64` | `base64 -w0 release.jks` |
+  | `KEYSTORE_PASSWORD` | store password |
+  | `KEY_ALIAS` | key alias |
+  | `KEY_PASSWORD` | key password (same as store password for PKCS12) |
+
+  Generate one keystore and keep it forever:
+
+  ```bash
+  keytool -genkeypair -v -keystore release.jks -alias routespoofer \
+    -keyalg RSA -keysize 2048 -validity 10000
+  ```
+
+- **Without the secrets** the workflow still builds, but with a throwaway debug
+  keystore generated per run. Such APKs install fine once, but never update over
+  an older build — the job prints a warning saying exactly that.
+
+### Testing
+
+Install the current build, bump `versionCode`/`versionName` in
+`android/app/build.gradle`, push to `main`, wait for the run to publish the
+`latest` release, then open the app again (or wait for the 6 h check) — the
+update banner should appear and install successfully.
+
 
 ## Project layout
 
@@ -178,8 +218,9 @@ fake-gps/
 │  └─ app/src/main/
 │     ├─ AndroidManifest.xml     # perms + <service> (foregroundServiceType=location)
 │     └─ java/com/routespoofer/app/
-│        ├─ MainActivity.java         # registers the FakeGps plugin
+│        ├─ MainActivity.java         # registers the FakeGps + AppUpdater plugins
 │        ├─ FakeGpsPlugin.kt          # Capacitor bridge (start/pause/.../ensureReady)
+│        ├─ AppUpdaterPlugin.kt       # self-update: download APK, verify, install
 │        └─ MockLocationService.kt    # playback clock + GPS/NETWORK test-provider injection
 ├─ .github/workflows/android.yml # cloud APK build
 └─ html-example/fake-gps.html    # original UX reference

@@ -44,8 +44,9 @@ Android only: iOS has no public mock-location API.
 - **End of route:** the driver stops and **keeps broadcasting** the final
   position; only the GPS toggle stops broadcasting. **Loop modes:** off /
   restart / ping-pong.
-- **Speed:** a live global speed slider (changeable mid-drive) plus optional
-  per-leg speed overrides.
+- **Speed:** three live modes — walking, running and cycling (changeable
+  mid-drive) — with each mode's speed in m/s configurable in Settings, plus
+  optional per-leg speed overrides.
 - **Saved routes.** Save the whole scene as a named route, then load, rename or
   delete it — all on-device. Select several to export one JSON file (or share it
   from Android); import merges them back.

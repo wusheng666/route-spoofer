@@ -96,6 +96,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Self-updates are installed from an APK downloaded over HTTPS, so the
+         app needs the "install unknown apps" capability (user-granted per app
+         on Android 8+). Not used when the app is distributed through a store. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Required for the app to appear in Developer options' "Select mock
          location app" picker. Not granted at runtime; selecting the app in
          dev options is what authorizes mock injection. -->
