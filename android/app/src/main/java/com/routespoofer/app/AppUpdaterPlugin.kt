@@ -61,6 +61,7 @@ class AppUpdaterPlugin : Plugin() {
         call.resolve()
     }
 
+    @Suppress("TooGenericExceptionCaught") // any failure means "update not applied"; the web layer shows one message
     @PluginMethod
     fun downloadAndInstall(call: PluginCall) {
         val url = call.getString("url")
