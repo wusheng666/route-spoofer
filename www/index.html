@@ -2975,7 +2975,8 @@ async function installUpdate(){
       sha256: updInfo.sha256 || '',
       versionName: updInfo.versionName || ''
     });
-    $('updBanner').hidden = true;      // the system installer is now in front
+    // Keep the banner: if the user cancels the system installer, Download stays
+    // available instead of disappearing until the next 6 h check.
   }catch(e){
     const code = (e && e.code) || '';
     if(code === 'INSTALL_PERMISSION'){
