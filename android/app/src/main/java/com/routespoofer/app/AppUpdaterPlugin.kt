@@ -34,7 +34,6 @@ import java.util.concurrent.Executors
  */
 @CapacitorPlugin(name = "AppUpdater")
 class AppUpdaterPlugin : Plugin() {
-
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
 
@@ -52,10 +51,11 @@ class AppUpdaterPlugin : Plugin() {
     @PluginMethod
     fun openInstallSettings(call: PluginCall) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${context.packageName}")
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val intent =
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${context.packageName}"),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
         }
         call.resolve()
@@ -97,7 +97,10 @@ class AppUpdaterPlugin : Plugin() {
         }
     }
 
-    private fun download(url: String, target: File) {
+    private fun download(
+        url: String,
+        target: File,
+    ) {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.instanceFollowRedirects = true
         conn.connectTimeout = CONNECT_TIMEOUT_MS
@@ -118,7 +121,11 @@ class AppUpdaterPlugin : Plugin() {
     }
 
     /** Streams [input] into [output], reporting whole percentages when [total] is known. */
-    private fun copyWithProgress(input: InputStream, output: OutputStream, total: Long) {
+    private fun copyWithProgress(
+        input: InputStream,
+        output: OutputStream,
+        total: Long,
+    ) {
         val buf = ByteArray(BUFFER_SIZE)
         var read = 0L
         var lastPct = -1
@@ -150,28 +157,30 @@ class AppUpdaterPlugin : Plugin() {
      */
     private fun isInstallable(apk: File): Boolean {
         @Suppress("DEPRECATION")
-        val archive = context.packageManager.getPackageArchiveInfo(
-            apk.absolutePath,
-            PackageManager.GET_SIGNATURES
-        ) ?: return false
+        val archive =
+            context.packageManager.getPackageArchiveInfo(
+                apk.absolutePath,
+                PackageManager.GET_SIGNATURES,
+            ) ?: return false
         if (archive.packageName != context.packageName) return false
         @Suppress("DEPRECATION")
-        val current = context.packageManager.getPackageInfo(
-            context.packageName,
-            PackageManager.GET_SIGNATURES
-        )
+        val current =
+            context.packageManager.getPackageInfo(
+                context.packageName,
+                PackageManager.GET_SIGNATURES,
+            )
         return signaturesOf(archive) == signaturesOf(current)
     }
 
     @Suppress("DEPRECATION")
-    private fun signaturesOf(info: PackageInfo): Set<String> =
-        info.signatures?.map { it.toCharsString() }?.toSet() ?: emptySet()
+    private fun signaturesOf(info: PackageInfo): Set<String> = info.signatures?.map { it.toCharsString() }?.toSet() ?: emptySet()
 
     private fun launchInstaller(apk: File) {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apk)
-        val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, "application/vnd.android.package-archive")
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        val intent =
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
     }
 
