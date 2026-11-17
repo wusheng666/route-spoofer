@@ -1023,7 +1023,7 @@ function nz(v, d){ return v == null ? d : v; }
        below; search falls back to the existing Web 服务 API / Nominatim path.
    All route data + emitted fixes stay WGS-84 at all times — coordinate
    conversion only happens at the map display boundary. */
-const MAP_AMAP_JS_KEY = (function(){ try{ return (localStorage.getItem('amapJsKey') || '').trim(); }catch(e){ return ''; } })();
+const MAP_AMAP_JS_KEY = '847b0f55961aff30d27bbc7d1bfe73d2';
 const USING_AMAP = !!MAP_AMAP_JS_KEY;   // set at load time, immutable after
 const AMAP_JS_SDK_URL = 'https://webapi.amap.com/maps?v=2.0&key=' + encodeURIComponent(MAP_AMAP_JS_KEY);
 const AMAP_TILE_URL = 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}';
@@ -2882,7 +2882,7 @@ $('deckGrab').onclick = () => setDeckCollapsed(!document.body.classList.contains
      3. Nominatim (OSM) — always available as last resort
    AMap answers in GCJ-02; the result is converted to WGS-84 before it reaches
    the route/map state (which always works in WGS-84). */
-const AMAP_WEB_KEY = (function(){ try{ return (localStorage.getItem('amapWebKey') || '289375feb81545ba66c07e00d0a78a15').trim(); }catch(e){ return ''; } })();
+const AMAP_WEB_KEY = (function(){ try{ return (localStorage.getItem('amapWebKey') || '').trim(); }catch(e){ return ''; } })();
 const geocode = (function(){
   let timer = null, inflight = false;
   // --- Leaflet-fallback REST helpers (Web Service API + Nominatim) ---
