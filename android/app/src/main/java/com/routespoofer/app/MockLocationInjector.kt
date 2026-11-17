@@ -31,8 +31,16 @@ import com.google.android.gms.location.LocationServices
  */
 class MockLocationInjector(private val context: Context) {
     private val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    private val fusedClient: FusedLocationProviderClient =
+
+    /**
+     * Lazy — we NEVER touch this unless isGmsAvailable() returned true above. On a
+     * no-GMS device simply constructing a FusedLocationProviderClient is enough
+     * for Play Services to pop its "your device is not supported" dialog, so we
+     * must delay + guard every access.
+     */
+    private val fusedClient: FusedLocationProviderClient by lazy {
         LocationServices.getFusedLocationProviderClient(context)
+    }
 
     @Volatile
     private var flpMockEngaged = false
