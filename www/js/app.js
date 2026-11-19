@@ -31,7 +31,12 @@ function nz(v, d){ return v == null ? d : v; }
        below; search falls back to the existing Web 服务 API / Nominatim path.
    All route data + emitted fixes stay WGS-84 at all times — coordinate
    conversion only happens at the map display boundary. */
-const MAP_AMAP_JS_KEY = '847b0f55961aff30d27bbc7d1bfe73d2';
+/* AMap JS SDK mode is opt-in only: set localStorage['amapJsKey'] to a valid 高德
+   Web端(JS API) key to use the AMap JS SDK as the whole map layer. Default (no key)
+   is the battle-tested Leaflet + keyless 高德 raster tiles — the hardcoded-key era
+   showed the SDK path fails on many phones (key referer/security restrictions,
+   partial init), leaving a dead or double-initialised map container. */
+const MAP_AMAP_JS_KEY = (function(){ try{ return (localStorage.getItem('amapJsKey') || '').trim(); }catch(e){ return ''; } })();
 /* Runtime map-engine flag: starts true only when a JS key exists, but initMap()
    clears it when the AMap SDK fails to load and we fall back to Leaflet. Every
    engine branch below must read THIS flag (not window.AMap) after init — mixing
@@ -676,6 +681,11 @@ async function initMap(){
       catch(e){
         console.warn('[map] AMap SDK failed, falling back to Leaflet', e);
         USING_AMAP = false;   // engine flag must follow the fallback (see note at its declaration)
+        /* _initAmap() may throw AFTER new AMap.Map() succeeded — destroy the half-made
+           map first or its dead DOM/layers stay in the container and swallow every
+           gesture under Leaflet's panes (no zoom, no tap on phones). */
+        try{ if(map && typeof map.destroy === 'function') map.destroy(); }catch(e2){ console.warn('[map] destroy failed', e2); }
+        map = null;
         await _loadLeaflet();
       }
     } else {
