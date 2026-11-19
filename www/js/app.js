@@ -87,7 +87,6 @@ let toMapLL, fromMapLL;
 const Cap = window.Capacitor;
 const isNative = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
 const FakeGps = isNative && Cap.Plugins ? Cap.Plugins.FakeGps : null;
-const Geo = isNative && Cap.Plugins ? Cap.Plugins.Geolocation : null;
 const Browser = Cap && Cap.Plugins ? Cap.Plugins.Browser : null;
 const Filesystem = isNative && Cap.Plugins ? Cap.Plugins.Filesystem : null;
 const Share = isNative && Cap.Plugins ? Cap.Plugins.Share : null;
@@ -1406,11 +1405,9 @@ $('reverse').onclick=()=>{ if(S.gpsOn||S.waypoints.length<2)return; S.waypoints.
 $('lock').onclick=toggleLock;
 
 /* A geolocation failure is not proof that location services are off (#4563): a plain
-   timeout, an unavailable provider or a Play-services hiccup all reject too. Blaming
-   "location is off" for every rejection sent testers to a Settings screen that was
-   already correct — so read the error out instead. Capacitor's Android codes are
-   OS-PLUG-GLOC-0003 (permission), 0007 (services really off), 0010 (timeout); the web
-   PositionError uses 1 / 2 / 3. */
+   timeout or an unavailable provider rejects too. Blaming "location is off" for every
+   rejection sent testers to a Settings screen that was already correct — so read the
+   error out instead. The browser preview's web PositionError uses codes 1 / 2 / 3. */
 function geoErrHint(e){
   const s=((e&&e.code)!=null?String(e.code):'')+' '+((e&&e.message)||'');
   if(/GLOC-0007/.test(s)) return t('hint.locationDenied');
@@ -1437,17 +1434,17 @@ async function ensureLocationPermission(){
   return granted;
 }
 const REAL_FIX_TIMEOUT_MS=15000;
-// One fresh high-accuracy fix -> {lat,lng,accuracy,isMock}. On native the FakeGps plugin
-// reports whether the OS flagged it as mock; without Play services it falls back to
-// Capacitor Geolocation (no mock flag — callers already refuse while we inject).
+// One fresh high-accuracy fix -> {lat,lng,accuracy,isMock}. On native, FakeGps.getRealFix
+// serves it via Fused when Play Services exists and via the framework LocationManager
+// otherwise, so no-GMS devices (Huawei etc.) never touch a Google API — the old
+// Capacitor-Geolocation fallback popped the Play Services "not supported" dialog there
+// (#4528 follow-up). The browser preview uses the plain web Geolocation API.
 function getRealFix(){
   const fromCoords = c => ({ lat:c.latitude, lng:c.longitude, accuracy:c.accuracy||0, isMock:false });
   const fix = new Promise((res,rej)=>{
-    const viaGeo = () => Geo.getCurrentPosition({enableHighAccuracy:true, timeout:REAL_FIX_TIMEOUT_MS, maximumAge:0}).then(p=>res(fromCoords(p.coords)), rej);
     if(isNative && FakeGps && FakeGps.getRealFix){
-      FakeGps.getRealFix().then(res, e=>{ if((e && e.code==='permission') || !Geo) rej(e); else viaGeo(); });
-    } else if(isNative && Geo){ viaGeo(); }
-    else if(navigator.geolocation){
+      FakeGps.getRealFix().then(res, rej);
+    } else if(navigator.geolocation){
       navigator.geolocation.getCurrentPosition(p=>res(fromCoords(p.coords)), rej, {enableHighAccuracy:true, timeout:REAL_FIX_TIMEOUT_MS, maximumAge:0});
     } else rej({code:'unavailable'});
   });

@@ -7,9 +7,13 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -27,6 +31,7 @@ import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import org.json.JSONArray
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Capacitor bridge for the route player. All heavy lifting (playback clock,
@@ -220,11 +225,14 @@ class FakeGpsPlugin : Plugin() {
     // ----------------------------------------------------------------- real position
 
     /**
-     * One fresh, high-accuracy fix from the fused provider for the map's locate-me
-     * button. Resolves `{ lat, lng, accuracy, isMock }`; `isMock` (Location.isMock() on
-     * API 31+, isFromMockProvider() below) lets the web layer refuse our own injected
+     * One fresh, high-accuracy fix for the map's locate-me button. Resolves
+     * `{ lat, lng, accuracy, isMock }`; `isMock` (Location.isMock() on API 31+,
+     * isFromMockProvider() below) lets the web layer refuse our own injected
      * position. Rejects "permission" without location permission and "unavailable"
-     * when there is no fix or no Play services, so the web layer can fall back.
+     * when there is no fix. Uses the fused provider when Play Services exists and
+     * the framework LocationManager otherwise, so a no-GMS device (Huawei etc.)
+     * never touches a Google API — touching one pops the Play Services
+     * "your device is not supported" dialog.
      */
     @SuppressLint("MissingPermission") // checked via getPermissionState just above the request
     @PluginMethod
@@ -233,11 +241,11 @@ class FakeGpsPlugin : Plugin() {
             call.reject("location permission not granted", ERROR_PERMISSION)
             return
         }
-        if (!isGmsAvailable(context)) {
-            Log.i(TAG, "getRealFix: Play Services absent — skipping Fused layer, web will fall back")
-            call.reject("Play Services unavailable", ERROR_UNAVAILABLE)
-            return
-        }
+        if (isGmsAvailable(context)) getFusedFix(call) else getFrameworkFix(call)
+    }
+
+    /** Fused-provider path — only ever entered with Play Services present. */
+    private fun getFusedFix(call: PluginCall) {
         val request =
             CurrentLocationRequest
                 .Builder()
@@ -253,12 +261,7 @@ class FakeGpsPlugin : Plugin() {
                     if (loc == null) {
                         call.reject("no fix", ERROR_UNAVAILABLE)
                     } else {
-                        val res = JSObject()
-                        res.put("lat", loc.latitude)
-                        res.put("lng", loc.longitude)
-                        res.put("accuracy", if (loc.hasAccuracy()) loc.accuracy.toDouble() else 0.0)
-                        res.put("isMock", LocationCompat.isMock(loc))
-                        call.resolve(res)
+                        resolveFix(call, loc)
                     }
                 }.addOnFailureListener { e -> call.reject(e.message ?: "no fix", ERROR_UNAVAILABLE) }
         } catch (e: SecurityException) {
@@ -267,6 +270,94 @@ class FakeGpsPlugin : Plugin() {
             Log.w(TAG, "getRealFix: fused provider unavailable", e)
             call.reject(e.message ?: "no fix", ERROR_UNAVAILABLE)
         }
+    }
+
+    /**
+     * Framework LocationManager path for no-GMS devices: a fresh-enough last-known
+     * fix resolves instantly; otherwise one live GPS/network update within the
+     * timeout. AOSP APIs only, so no Play Services dialog can ever appear.
+     */
+    @Suppress("DEPRECATION") // requestSingleUpdate/getLastKnownLocation — the no-GMS path
+    @SuppressLint("MissingPermission") // checked in getRealFix()
+    private fun getFrameworkFix(call: PluginCall) {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+
+        // Prefer a fresh, real last-known fix — instant, no radio wait.
+        for (p in providers) {
+            val last =
+                try {
+                    if (lm.isProviderEnabled(p)) lm.getLastKnownLocation(p) else null
+                } catch (e: SecurityException) {
+                    call.reject(e.message ?: "location permission not granted", ERROR_PERMISSION)
+                    return
+                } catch (e: IllegalArgumentException) {
+                    null
+                }
+            if (last != null && !LocationCompat.isMock(last) &&
+                System.currentTimeMillis() - last.time < LAST_KNOWN_MAX_AGE_MS
+            ) {
+                resolveFix(call, last)
+                return
+            }
+        }
+
+        // No recent fix — wait for one live update from the best enabled provider.
+        val live =
+            providers.firstOrNull {
+                try {
+                    lm.isProviderEnabled(it)
+                } catch (e: IllegalArgumentException) {
+                    false
+                }
+            }
+        if (live == null) {
+            Log.i(TAG, "getRealFix: no enabled location provider — location services off?")
+            call.reject("no enabled provider", ERROR_UNAVAILABLE)
+            return
+        }
+        val handler = Handler(Looper.getMainLooper())
+        val done = AtomicBoolean(false)
+        val listener =
+            object : LocationListener {
+                override fun onLocationChanged(loc: Location) {
+                    if (done.compareAndSet(false, true)) {
+                        handler.removeCallbacksAndMessages(null)
+                        lm.removeUpdates(this)
+                        resolveFix(call, loc)
+                    }
+                }
+            }
+        val timeout =
+            Runnable {
+                if (done.compareAndSet(false, true)) {
+                    lm.removeUpdates(listener)
+                    call.reject("no fix", ERROR_UNAVAILABLE)
+                }
+            }
+        handler.postDelayed(timeout, REAL_FIX_TIMEOUT_MS)
+        try {
+            lm.requestSingleUpdate(live, listener, Looper.getMainLooper())
+        } catch (e: SecurityException) {
+            handler.removeCallbacks(timeout)
+            call.reject(e.message ?: "location permission not granted", ERROR_PERMISSION)
+        } catch (e: Exception) {
+            Log.w(TAG, "getRealFix: framework provider unavailable", e)
+            handler.removeCallbacks(timeout)
+            call.reject(e.message ?: "no fix", ERROR_UNAVAILABLE)
+        }
+    }
+
+    private fun resolveFix(
+        call: PluginCall,
+        loc: Location,
+    ) {
+        val res = JSObject()
+        res.put("lat", loc.latitude)
+        res.put("lng", loc.longitude)
+        res.put("accuracy", if (loc.hasAccuracy()) loc.accuracy.toDouble() else 0.0)
+        res.put("isMock", LocationCompat.isMock(loc))
+        call.resolve(res)
     }
 
     // ----------------------------------------------------------------- readiness
@@ -544,6 +635,7 @@ class FakeGpsPlugin : Plugin() {
         private const val ERROR_PERMISSION = "permission"
         private const val ERROR_UNAVAILABLE = "unavailable"
         private const val REAL_FIX_TIMEOUT_MS = 15_000L
+        private const val LAST_KNOWN_MAX_AGE_MS = 3 * 60_000L
         private const val PROBE_PROVIDER = "route-spoofer-probe"
         private const val DEV_CHANNEL_ID = "route_spoofer_devopts2"
         private const val LEGACY_DEV_CHANNEL_ID = "route_spoofer_devopts"
