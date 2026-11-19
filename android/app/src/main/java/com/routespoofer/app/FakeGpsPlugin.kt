@@ -277,29 +277,16 @@ class FakeGpsPlugin : Plugin() {
      * fix resolves instantly; otherwise one live GPS/network update within the
      * timeout. AOSP APIs only, so no Play Services dialog can ever appear.
      */
-    @Suppress("DEPRECATION") // requestSingleUpdate/getLastKnownLocation — the no-GMS path
     @SuppressLint("MissingPermission") // checked in getRealFix()
     private fun getFrameworkFix(call: PluginCall) {
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
 
         // Prefer a fresh, real last-known fix — instant, no radio wait.
-        for (p in providers) {
-            val last =
-                try {
-                    if (lm.isProviderEnabled(p)) lm.getLastKnownLocation(p) else null
-                } catch (e: SecurityException) {
-                    call.reject(e.message ?: "location permission not granted", ERROR_PERMISSION)
-                    return
-                } catch (e: IllegalArgumentException) {
-                    null
-                }
-            if (last != null && !LocationCompat.isMock(last) &&
-                System.currentTimeMillis() - last.time < LAST_KNOWN_MAX_AGE_MS
-            ) {
-                resolveFix(call, last)
-                return
-            }
+        val lastKnown = freshLastKnownFix(lm, providers)
+        if (lastKnown != null) {
+            resolveFix(call, lastKnown)
+            return
         }
 
         // No recent fix — wait for one live update from the best enabled provider.
@@ -308,6 +295,7 @@ class FakeGpsPlugin : Plugin() {
                 try {
                     lm.isProviderEnabled(it)
                 } catch (e: IllegalArgumentException) {
+                    Log.d(TAG, "isProviderEnabled($it) failed on this ROM", e)
                     false
                 }
             }
@@ -316,6 +304,43 @@ class FakeGpsPlugin : Plugin() {
             call.reject("no enabled provider", ERROR_UNAVAILABLE)
             return
         }
+        awaitLiveFix(call, lm, live)
+    }
+
+    /** Fresh (< [LAST_KNOWN_MAX_AGE_MS]), real last-known fix across [providers], or null. */
+    @SuppressLint("MissingPermission") // checked in getRealFix()
+    private fun freshLastKnownFix(
+        lm: LocationManager,
+        providers: List<String>,
+    ): Location? {
+        for (p in providers) {
+            val last =
+                try {
+                    if (lm.isProviderEnabled(p)) lm.getLastKnownLocation(p) else null
+                } catch (e: SecurityException) {
+                    Log.d(TAG, "getLastKnownLocation($p) denied", e)
+                    null
+                } catch (e: IllegalArgumentException) {
+                    Log.d(TAG, "getLastKnownLocation($p) unavailable on this ROM", e)
+                    null
+                }
+            if (last != null && !LocationCompat.isMock(last) &&
+                System.currentTimeMillis() - last.time < LAST_KNOWN_MAX_AGE_MS
+            ) {
+                return last
+            }
+        }
+        return null
+    }
+
+    /** One live update from [provider] within the timeout; rejects the call if none arrives. */
+    @Suppress("DEPRECATION") // requestSingleUpdate — the no-GMS path
+    @SuppressLint("MissingPermission") // checked in getRealFix()
+    private fun awaitLiveFix(
+        call: PluginCall,
+        lm: LocationManager,
+        provider: String,
+    ) {
         val handler = Handler(Looper.getMainLooper())
         val done = AtomicBoolean(false)
         val listener =
@@ -337,12 +362,11 @@ class FakeGpsPlugin : Plugin() {
             }
         handler.postDelayed(timeout, REAL_FIX_TIMEOUT_MS)
         try {
-            lm.requestSingleUpdate(live, listener, Looper.getMainLooper())
+            lm.requestSingleUpdate(provider, listener, Looper.getMainLooper())
         } catch (e: SecurityException) {
             handler.removeCallbacks(timeout)
             call.reject(e.message ?: "location permission not granted", ERROR_PERMISSION)
-        } catch (e: Exception) {
-            Log.w(TAG, "getRealFix: framework provider unavailable", e)
+        } catch (e: IllegalArgumentException) {
             handler.removeCallbacks(timeout)
             call.reject(e.message ?: "no fix", ERROR_UNAVAILABLE)
         }
