@@ -32,7 +32,12 @@ function nz(v, d){ return v == null ? d : v; }
    All route data + emitted fixes stay WGS-84 at all times — coordinate
    conversion only happens at the map display boundary. */
 const MAP_AMAP_JS_KEY = '847b0f55961aff30d27bbc7d1bfe73d2';
-const USING_AMAP = !!MAP_AMAP_JS_KEY;   // set at load time, immutable after
+/* Runtime map-engine flag: starts true only when a JS key exists, but initMap()
+   clears it when the AMap SDK fails to load and we fall back to Leaflet. Every
+   engine branch below must read THIS flag (not window.AMap) after init — mixing
+   the two left the Leaflet fallback running AMap-branched code (e.lnglat etc.),
+   which killed map taps and locate-centering on phones that couldn't load the SDK. */
+let USING_AMAP = !!MAP_AMAP_JS_KEY;
 const AMAP_JS_SDK_URL = 'https://webapi.amap.com/maps?v=2.0&key=' + encodeURIComponent(MAP_AMAP_JS_KEY);
 const AMAP_TILE_URL = 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}';
 const AMAP_TILE_OPTS = { subdomains:'1234', maxZoom:19, maxNativeZoom:18, attribution:'© <a href="https://www.amap.com/">高德地图</a>' };
@@ -670,13 +675,15 @@ async function initMap(){
       try{ await _loadScript(AMAP_JS_SDK_URL, 'AMap'); await _initAmap(); }
       catch(e){
         console.warn('[map] AMap SDK failed, falling back to Leaflet', e);
+        USING_AMAP = false;   // engine flag must follow the fallback (see note at its declaration)
         await _loadLeaflet();
       }
     } else {
       await _loadLeaflet();
     }
-    // coordinate helpers are now branch-aware
-    if(USING_AMAP && window.AMap){
+    // coordinate helpers are now branch-aware (USING_AMAP is cleared on fallback above,
+    // so it is the authoritative engine indicator here)
+    if(USING_AMAP){
       toMapLL = (lat,lng) => {
         const r = AMap.convertFrom([lng, lat], 'gps');
         return r ? [r.lat, r.lng] : GCJ.wgs2gcj(lat,lng);   // fall back if SDK fails
@@ -1456,11 +1463,28 @@ function getRealFix(){
 let realPos=null;
 function showRealPosition(f){
   const ll=toMapLL(f.lat,f.lng), r=Math.max(f.accuracy||0, 1);
-  if(realPos){ realPos.ring.setLatLng(ll).setRadius(r); realPos.dot.setLatLng(ll); return; }
-  realPos={
-    ring:L.circle(ll,{radius:r, color:'#4285F4', weight:1, opacity:.6, fillColor:'#4285F4', fillOpacity:.15, interactive:false}).addTo(map),
-    dot:L.circleMarker(ll,{radius:7, color:'#fff', weight:2, opacity:1, fillColor:'#4285F4', fillOpacity:1, interactive:false}).addTo(map),
-  };
+  if(realPos){
+    if(USING_AMAP){
+      const c=[ll[1],ll[0]];   // AMap LngLat(lng, lat)
+      realPos.ring.setCenter(c); realPos.ring.setRadius(r); realPos.dot.setCenter(c);
+    } else {
+      realPos.ring.setLatLng(ll).setRadius(r); realPos.dot.setLatLng(ll);
+    }
+    return;
+  }
+  if(USING_AMAP){
+    const c=[ll[1],ll[0]];   // AMap LngLat(lng, lat)
+    realPos={
+      ring:new AMap.Circle({ center:c, radius:r, strokeColor:'#4285F4', strokeWeight:1, strokeOpacity:.6, fillColor:'#4285F4', fillOpacity:.15, bubble:true }),
+      dot:new AMap.CircleMarker({ center:c, radius:7, strokeColor:'#fff', strokeWeight:2, strokeOpacity:1, fillColor:'#4285F4', fillOpacity:1, bubble:true }),
+    };
+    map.add([realPos.ring, realPos.dot]);
+  } else {
+    realPos={
+      ring:L.circle(ll,{radius:r, color:'#4285F4', weight:1, opacity:.6, fillColor:'#4285F4', fillOpacity:.15, interactive:false}).addTo(map),
+      dot:L.circleMarker(ll,{radius:7, color:'#fff', weight:2, opacity:1, fillColor:'#4285F4', fillOpacity:1, interactive:false}).addTo(map),
+    };
+  }
 }
 // The mock injector is live whenever GPS broadcasts or a run is running/paused — a
 // "real" fix then is our own injected one.
@@ -1953,7 +1977,7 @@ const geocode = (function(){
     inflight = true; $('searchBar').classList.add('busy'); flashHint(t('search.searching'));
     try{
       let hit = null;
-      if(USING_AMAP && window.AMap){ try{ hit = await viaAmapSdk(q); }catch(e){ console.warn('[search] AMap SDK failed', e); } }
+      if(USING_AMAP){ try{ hit = await viaAmapSdk(q); }catch(e){ console.warn('[search] AMap SDK failed', e); } }
       if(!hit && AMAP_WEB_KEY){ try{ hit = await viaAmapRest(q); }catch(e){ console.warn('[search] AMap REST failed', e); } }
       if(!hit) hit = await viaNominatim(q);
       if(hit){ centerOnMap(hit, 13, true); hideHint(); }
