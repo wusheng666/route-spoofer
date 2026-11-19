@@ -1,0 +1,566 @@
+  :root{
+    --ink:#0D1117; --panel:#161B22; --panel-2:#1C232C;
+    --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.14);
+    --text:#E6EDF3; --muted:#8B98A8;
+    --signal:#F5A623; --signal-ink:#1A1206;
+    --route:#36C5F0; --ok:#3DDC84; --stop:#F2555A;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Roboto Mono",Menlo,monospace;
+    --sans:ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    font-family:var(--sans); color:var(--text); background:var(--ink);
+    overflow:hidden; -webkit-tap-highlight-color:transparent;
+  }
+  #map{position:absolute; inset:0; background:#eae6de; z-index:0}  /* light backdrop matches the light basemap while tiles load */
+  .leaflet-container{background:#0a0e13}
+  .leaflet-control-zoom{display:none}
+  .leaflet-bar a, .leaflet-popup-content-wrapper{background:var(--panel-2); color:var(--text); border:1px solid var(--line)}
+  .leaflet-popup-tip{background:var(--panel-2)}
+  /* AMap / OSM terms: the attribution must stay readable on the map screen.
+     Its .leaflet-bottom corner is lifted above the deck by syncAttributionInset().
+     Centred: the bottom-right corner is stretched full width and the control becomes a
+     centred inline-block (float/text-align only — Chrome 60 safe, no flex/inset). */
+  .leaflet-bottom.leaflet-right{left:0; right:0; text-align:center; line-height:0}
+  .leaflet-control-attribution{background:rgba(13,17,23,.78)!important; color:var(--text)!important; font:500 10px/1.4 var(--sans)!important;
+    padding:2px 7px!important; border-radius:6px 6px 0 0}
+  .leaflet-bottom.leaflet-right .leaflet-control-attribution{float:none; display:inline-block; vertical-align:bottom;
+    max-width:calc(100% - 16px); white-space:normal}
+  .leaflet-control-attribution a{color:var(--route)!important}
+  /* AMap JS SDK attribution — different DOM structure from Leaflet. Same visual treatment. */
+  .amap-logo{opacity:.55!important;}
+  .amap-copyright{background:rgba(13,17,23,.78)!important; color:var(--text)!important; font:500 10px/1.4 var(--sans)!important; padding:2px 7px!important; border-radius:6px 6px 0 0;}
+  .amap-copyright a{color:var(--route)!important}
+
+  /* ---------- top status strip ---------- */
+  #hud{
+    position:absolute; top:0; left:0; right:0; z-index:600;
+    padding:calc(env(safe-area-inset-top) + 8px) 10px 8px;
+    display:flex; gap:8px; align-items:center;
+    background:linear-gradient(180deg, rgba(13,17,23,.92) 0%, rgba(13,17,23,.55) 70%, transparent 100%);
+    pointer-events:none;
+  }
+  .state-pill{
+    pointer-events:auto; display:inline-flex; align-items:center; gap:9px;
+    font:600 11px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
+    padding:7px 12px 7px 11px; border-radius:999px; border:1px solid var(--line-2);
+    background:var(--panel); color:var(--muted); white-space:nowrap; flex:none;
+  }
+  .state-pill .dot{width:7px;height:7px;border-radius:50%;background:var(--muted); transition:background .15s}
+  /* Driving = a green light blinking next to the status word. Waiting/arrived keep a
+     steady lamp so the blink means "moving right now" and nothing else. */
+  body[data-phase="driving"] .state-pill{color:var(--ok); border-color:rgba(61,220,132,.5)}
+  body[data-phase="driving"] .state-pill .dot{background:var(--ok); box-shadow:0 0 7px var(--ok); animation:blink .9s steps(2,end) infinite}
+  body[data-phase="arrived"] .state-pill{color:var(--ok); border-color:rgba(61,220,132,.5)}
+  body[data-phase="arrived"] .state-pill .dot{background:var(--ok)}
+  body[data-phase="waiting_go"] .state-pill,
+  body[data-phase="waiting_timed"] .state-pill{color:var(--signal); border-color:var(--signal)}
+  body[data-phase="waiting_go"] .state-pill .dot,
+  body[data-phase="waiting_timed"] .state-pill .dot{background:var(--signal)}
+  @keyframes blink{50%{opacity:.25}}
+
+  .chips{display:flex; gap:6px; overflow-x:auto; scrollbar-width:none; flex:1; --fade:20px}
+  .chips::-webkit-scrollbar{display:none}
+  /* fade the edge that has more off-screen chips, so the clipped value reads as
+     "scroll for more" rather than a broken cut-off (narrow phones can't fit all 4) */
+  .chips[data-of="right"]{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - var(--fade)),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - var(--fade)),transparent)}
+  .chips[data-of="left"]{-webkit-mask-image:linear-gradient(90deg,transparent,#000 var(--fade));mask-image:linear-gradient(90deg,transparent,#000 var(--fade))}
+  .chips[data-of="both"]{-webkit-mask-image:linear-gradient(90deg,transparent,#000 var(--fade),#000 calc(100% - var(--fade)),transparent);mask-image:linear-gradient(90deg,transparent,#000 var(--fade),#000 calc(100% - var(--fade)),transparent)}
+  .chip{
+    pointer-events:auto; flex:none; background:var(--panel); border:1px solid var(--line);
+    border-radius:8px; padding:5px 9px; min-width:64px;
+  }
+  .chip b{display:block; font:500 9px/1.4 var(--sans); letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+  .chip span{display:block; font:600 13px/1.2 var(--mono); color:var(--text); margin-top:2px}
+  .chip.lat span,.chip.lng span{color:var(--ok)}
+
+  /* ---------- bottom control deck ---------- */
+  #deck{
+    position:absolute; left:0; right:0; bottom:0; z-index:600;
+    background:var(--panel); border-top:1px solid var(--line-2);
+    border-radius:16px 16px 0 0; box-shadow:0 -12px 40px rgba(0,0,0,.45);
+    padding:10px 14px calc(env(safe-area-inset-bottom) + 12px);
+    display:flex; flex-direction:column; gap:12px;
+  }
+  .deck-grab{display:block; width:100%; background:none; border:0; padding:7px 0 5px; cursor:pointer; touch-action:none}
+  .deck-handle{display:block; width:40px;height:5px;border-radius:99px;background:var(--muted);opacity:.85;margin:0 auto; transition:background .15s,opacity .15s}
+  .deck-grab:hover .deck-handle,.deck-grab:active .deck-handle{background:var(--text);opacity:1}
+  /* collapsible body — everything below the transport row folds away */
+  #deckBody{display:flex; flex-direction:column; gap:12px; overflow:hidden; max-height:70vh; opacity:1;
+    transition:max-height .28s ease, opacity .2s ease}
+  body.deck-collapsed #deckBody{max-height:0; opacity:0}
+  body.deck-collapsed #deck{gap:4px}
+
+  .transport{display:flex; align-items:center; gap:14px}
+  .gps-btn{
+    --ring:var(--signal);
+    position:relative; flex:none; width:66px; height:66px; border-radius:50%;
+    border:1px solid var(--line-2); background:var(--panel-2); color:var(--text);
+    display:grid; place-items:center; cursor:pointer; transition:transform .12s ease, background .15s;
+  }
+  .gps-btn:active{transform:scale(.94)}
+  .gps-btn svg{width:26px;height:26px;fill:currentColor;position:relative;z-index:2}
+  /* GPS ON = continuously broadcasting (independent of movement) */
+  body[data-gps="on"] .gps-btn{background:var(--signal); color:var(--signal-ink); border-color:transparent}
+  body[data-gps="on"] .gps-btn::before,
+  body[data-gps="on"] .gps-btn::after{
+    content:""; position:absolute; inset:-1px; border-radius:50%;
+    border:2px solid var(--signal); animation:ping 1.6s ease-out infinite;
+  }
+  body[data-gps="on"] .gps-btn::after{animation-delay:.8s}
+  @keyframes ping{0%{opacity:.7;transform:scale(1)}100%{opacity:0;transform:scale(1.7)}}
+  /* Pressing GO while GPS is off points here — the button the user has to tap first. */
+  .gps-btn.nudge{animation:nudge 1.5s ease-out}
+  @keyframes nudge{
+    0%,100%{box-shadow:0 0 0 0 rgba(245,166,35,0)}
+    15%,45%,75%{box-shadow:0 0 0 6px rgba(245,166,35,.45)}
+    30%,60%,90%{box-shadow:0 0 0 0 rgba(245,166,35,0)}
+  }
+
+  /* GO / Pause — drives the cursor; only meaningful while GPS is on */
+  .go-btn{
+    position:relative;              /* anchors .loop-badge */
+    flex:none; width:54px; height:54px; border-radius:50%; cursor:pointer;
+    border:1px solid var(--line-2); background:var(--panel-2); color:var(--ok);
+    display:grid; place-items:center; transition:transform .12s ease, background .15s, opacity .15s;
+  }
+  .go-btn:active{transform:scale(.94)}
+  .go-btn svg{width:22px;height:22px;fill:currentColor}
+  /* GO stays tappable while it can't run (it is never `disabled`) — a tap on the dimmed
+     button explains what's missing instead of doing nothing. */
+  .go-btn[aria-disabled="true"]{opacity:.4}
+  body[data-phase="driving"] .go-btn{background:var(--ok); color:#06281a; border-color:transparent}
+
+  /* Loop badge — the loop segmented control lives inside the collapsible #deckBody,
+     so once the deck is down there is nothing left saying the route will repeat.
+     This rides on GO (in .transport, which never collapses) and costs no layout width.
+     Deliberately neutral: --signal already reads as "waiting" and --ok as "driving",
+     so a coloured badge here would claim a phase it doesn't own. Its own `color` is
+     set explicitly because .go-btn flips currentColor to near-black while driving. */
+  .loop-badge{
+    position:absolute; top:0; right:0; width:16px; height:16px; border-radius:50%;
+    display:none; place-items:center; pointer-events:none;   /* GO must stay fully tappable */
+    background:var(--panel-2); border:1px solid var(--line-2); color:var(--text);
+  }
+  body[data-loop="restart"] .loop-badge,
+  body[data-loop="pingpong"] .loop-badge{display:grid}
+  .loop-badge svg{
+    width:10px; height:10px; fill:none; stroke:currentColor;
+    stroke-width:2.75; stroke-linecap:round; stroke-linejoin:round;
+  }
+
+  .live-read{flex:1; min-width:0}
+  .live-read .coord{font:600 17px/1.25 var(--mono); letter-spacing:.01em; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .live-read .coord .mut{color:var(--muted)}
+  .live-read .sub{margin-top:3px; font:500 11px/1.3 var(--sans); color:var(--muted); display:flex; gap:10px; flex-wrap:wrap}
+  .live-read .sub em{font-style:normal; color:var(--text); font-family:var(--mono)}
+  /* elapsed and loop share one slot — spelled out rather than left to the UA
+     [hidden] rule, which any later display declaration would silently beat */
+  .live-read .sub > span[hidden]{display:none}
+  /* Keep the label and its value on one line: this row wraps as a whole (flex-wrap),
+     and a break landing between "repetição" and "Vai e volta" would read as broken
+     rather than as a wrap. The widest current pair is ~128px against ~266px of row,
+     so pinning it costs no overflow risk today. */
+  #liveLoopWrap{white-space:nowrap}
+
+  .stopbtn{
+    flex:none; width:44px;height:44px;border-radius:12px; cursor:pointer;
+    background:var(--panel-2); border:1px solid var(--line-2); color:var(--muted);
+    display:grid;place-items:center; transition:.15s;
+  }
+  .stopbtn:active{transform:scale(.94)}
+  .stopbtn:hover:not(:disabled){color:var(--stop); border-color:var(--stop)}
+  .stopbtn:disabled{opacity:.4; cursor:default}
+  .stopbtn svg{width:15px;height:15px;fill:currentColor}
+
+  /* waypoint long-press menu */
+  .wpmenu{position:fixed; inset:0; z-index:1200; display:grid; place-items:end center;
+    background:rgba(2,6,12,.45); padding:0 14px calc(18px + env(safe-area-inset-bottom))}
+  .wpmenu[hidden]{display:none}
+  .wpmenu-card{width:100%; max-width:520px; background:var(--panel); border:1px solid var(--line-2);
+    border-radius:16px; padding:14px 16px 18px; box-shadow:0 18px 50px rgba(0,0,0,.5)}
+  .wpmenu-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:6px}
+  .wpmenu-head b{font:700 15px var(--sans); color:var(--text)}
+  .wpm-x{background:none; border:0; color:var(--muted); font-size:18px; cursor:pointer; padding:4px}
+  .wpm-l{display:block; font:600 12px var(--sans); color:var(--muted); margin:12px 0 6px}
+  .wpm-num{width:100%; box-sizing:border-box; background:var(--panel-2); border:1px solid var(--line-2);
+    color:var(--text); border-radius:10px; padding:9px 11px; font:600 14px var(--mono)}
+  /* the minutes field sits directly under the dwell toggle (no label), so give it room */
+  #wpmMin{margin-top:10px}
+  /* minutes field stays in the layout always; muted + non-editable unless 'minutes' is active */
+  .wpm-num:disabled{opacity:.4; cursor:not-allowed}
+  .wpm-remove{margin-top:14px; width:100%; background:var(--panel-2); border:1px solid var(--line-2);
+    color:var(--stop); border-radius:10px; padding:10px; font:600 13px var(--sans); cursor:pointer}
+
+  /* progress rail */
+  .rail{height:5px; border-radius:99px; background:var(--panel-2); overflow:hidden; position:relative}
+  .rail > i{position:absolute; left:0; top:0; bottom:0; width:0%; background:var(--signal); border-radius:99px; transition:width .12s linear}
+
+  /* control rows */
+  .row{display:flex; gap:10px; align-items:stretch}
+  .field{flex:1; background:var(--panel-2); border:1px solid var(--line); border-radius:11px; padding:8px 10px; min-width:0}
+  .field label{display:flex; justify-content:space-between; align-items:baseline; font:600 9px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+  .field label var{font:600 13px/1 var(--mono); color:var(--text); font-style:normal}
+  input[type=range]{width:100%; margin:9px 0 1px; accent-color:var(--signal); height:18px}
+  .speedmodes{margin-top:7px}
+  .speedmodes button{display:flex; flex-direction:column; align-items:center; gap:3px}
+  .speedmodes button small{font:600 10px/1 var(--mono); color:var(--muted)}
+  .speedmodes button.on small{color:var(--signal-ink); opacity:.8}
+
+  .seg{display:flex; background:var(--panel-2); border:1px solid var(--line); border-radius:9px; padding:3px; gap:3px}
+  .seg button{
+    flex:1; min-width:0; font:600 11px/1.15 var(--sans); padding:7px 4px; border-radius:6px; cursor:pointer;
+    background:transparent; border:0; color:var(--muted); transition:.12s;
+    text-align:center; overflow-wrap:break-word; hyphens:auto;
+  }
+  .seg button.on{background:var(--signal); color:var(--signal-ink)}
+
+  .tools{display:flex; gap:7px; flex-wrap:wrap}
+  .tool{
+    flex:1 1 0; min-width:88px; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    font:600 11px/1 var(--sans); padding:9px 8px; border-radius:9px; cursor:pointer;
+    background:var(--panel-2); border:1px solid var(--line); color:var(--text); transition:.12s;
+  }
+  .tool:active{transform:scale(.97)}
+  .tool:disabled{opacity:.4; cursor:not-allowed}
+  .tool svg{width:13px;height:13px;fill:currentColor;opacity:.85}
+  .tool.danger:hover{border-color:var(--stop); color:var(--stop)}
+  .tool.on{background:var(--signal); color:var(--signal-ink); border-color:transparent}
+
+  /* emit log */
+  details.log{border-top:1px solid var(--line); padding-top:9px}
+  details.log summary{
+    list-style:none; cursor:pointer; font:600 10px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); display:flex; align-items:center; gap:7px;
+  }
+  details.log summary::-webkit-details-marker{display:none}
+  details.log summary .tick{width:6px;height:6px;border-radius:50%;background:var(--line-2)}
+  body[data-phase="driving"] details.log summary .tick{background:var(--ok); box-shadow:0 0 0 0 var(--ok); animation:beat 1s ease-out infinite}
+  @keyframes beat{0%{box-shadow:0 0 0 0 rgba(61,220,132,.5)}100%{box-shadow:0 0 0 7px rgba(61,220,132,0)}}
+  .logwrap{margin-top:8px; max-height:108px; overflow:auto; border-radius:8px; background:var(--ink); border:1px solid var(--line)}
+  .logline{font:500 11px/1.5 var(--mono); color:var(--muted); padding:2px 9px; white-space:nowrap; border-bottom:1px solid rgba(255,255,255,.03)}
+  .logline:first-child{color:var(--ok)}
+  .logline .t{color:var(--signal)}
+
+  /* about / language + GitHub / author credit */
+  .about{display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap; padding-top:2px}
+  .lang-pick{
+    display:inline-flex; align-items:center; gap:6px; cursor:pointer;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:9px; padding:6px 9px; color:var(--muted);
+  }
+  .lang-pick svg{width:13px;height:13px;fill:currentColor;opacity:.85}
+  .lang-pick select{
+    background:transparent; border:0; color:var(--text); font:600 11px/1 var(--sans);
+    outline:none; cursor:pointer; -webkit-appearance:none; appearance:none; padding:0 2px;
+  }
+  .lang-pick select option{background:var(--panel-2); color:var(--text)}
+  .ghlink{
+    display:inline-flex; align-items:center; gap:6px; cursor:pointer;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:9px; padding:7px 11px;
+    color:var(--text); font:600 11px/1 var(--sans); transition:.12s;
+  }
+  .ghlink:hover{border-color:var(--line-2)}
+  .ghlink:active{transform:scale(.97)}
+  .ghlink svg{width:14px;height:14px;fill:currentColor;opacity:.9}
+
+  /* help "?" button */
+  .helpbtn{
+    width:30px;height:30px;border-radius:50%; cursor:pointer; flex:none;
+    background:var(--panel-2); border:1px solid var(--line); color:var(--muted);
+    font:700 14px/1 var(--sans); display:grid;place-items:center; transition:.12s;
+  }
+  .helpbtn:hover{border-color:var(--line-2); color:var(--text)}
+  .helpbtn:active{transform:scale(.95)}
+
+  /* help / legend modal */
+  #help{
+    position:absolute; z-index:720; inset:0; display:none; align-items:center; justify-content:center;
+    padding:20px; background:rgba(8,11,15,.72); backdrop-filter:blur(3px);
+  }
+  #help.show{display:flex}
+  .help-card{
+    width:100%; max-width:420px; max-height:84vh; display:flex; flex-direction:column;
+    background:var(--panel); border:1px solid var(--line-2); border-radius:16px;
+    box-shadow:0 18px 60px rgba(0,0,0,.6); overflow:hidden;
+  }
+  .help-head{display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:16px 16px 10px; border-bottom:1px solid var(--line)}
+  .help-head h2{margin:0; font:700 16px/1.2 var(--sans); color:var(--text); display:flex; align-items:center; gap:8px}
+  .help-head h2 svg{width:18px;height:18px;fill:var(--signal)}
+  .help-x{background:none;border:0;color:var(--muted);font-size:18px;cursor:pointer;padding:4px;line-height:1}
+  .help-body{overflow-y:auto; padding:8px 16px 18px; -webkit-overflow-scrolling:touch}
+  .help-body section{padding:12px 0; border-top:1px solid var(--line)}
+  .help-body section:first-child{border-top:0}
+  .help-body h3{margin:0 0 6px; font:700 13px/1.3 var(--sans); color:var(--text)}
+  .help-body ul{margin:0; padding-left:18px}
+  .help-body li{margin:5px 0; font:500 12px/1.55 var(--sans); color:var(--muted)}
+  .help-action{margin-top:10px; width:100%; background:var(--panel-2); border:1px solid var(--line-2);
+    color:var(--text); border-radius:10px; padding:9px; font:600 12px var(--sans); cursor:pointer}
+  .help-action:active{transform:scale(.98)}
+
+  /* control glyph chips inside the help legend (match the real buttons) */
+  .ctl-legend{display:flex; flex-wrap:wrap; gap:14px; margin:4px 0 10px}
+  .ctl-item{display:flex; align-items:center; gap:7px; font:600 11px var(--sans); color:var(--muted)}
+  .ctl-chip{flex:none; display:grid; place-items:center; width:22px; height:22px; border-radius:50%;
+    border:1px solid var(--line-2); background:var(--panel-2)}
+  .ctl-chip svg{width:13px; height:13px; fill:currentColor}
+  .ctl-chip.gps{background:var(--signal); border-color:transparent; color:var(--signal-ink)}
+  .ctl-chip.go{background:var(--ok); border-color:transparent; color:#06281a}
+  .ctl-chip.stop{border-radius:6px; color:var(--muted)}
+
+  /* waypoint pin swatches inside the help map legend (match the map markers) */
+  .pin-legend{list-style:none; padding:0; margin:0}
+  .pin-legend li{display:flex; align-items:center; gap:11px; margin:8px 0; font:500 12px/1.4 var(--sans); color:var(--muted)}
+  .pin{flex:none; width:16px; height:16px; border-radius:50% 50% 50% 2px; transform:rotate(45deg);
+    background:var(--route); border:2px solid #fff; display:grid; place-items:center}
+  .pin i{transform:rotate(-45deg); font:700 8px/1 var(--mono); font-style:normal; color:#062330}
+  .pin.start{background:var(--ok)} .pin.start i{color:#06281a}
+  .pin.end{background:var(--stop)} .pin.end i{color:#2a0608}
+
+  /* saved-routes button glyph + modal */
+  .helpbtn svg{width:15px;height:15px;fill:currentColor}
+  #routes,#settings{
+    position:absolute; z-index:730; inset:0; display:none; align-items:center; justify-content:center;
+    padding:20px; background:rgba(8,11,15,.72); backdrop-filter:blur(3px);
+  }
+  #routes.show,#settings.show{display:flex}
+  .rt-card{
+    width:100%; max-width:440px; max-height:84vh; display:flex; flex-direction:column;
+    background:var(--panel); border:1px solid var(--line-2); border-radius:16px;
+    box-shadow:0 18px 60px rgba(0,0,0,.6); overflow:hidden;
+  }
+  .rt-head{display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:16px 16px 10px; border-bottom:1px solid var(--line)}
+  .rt-head h2{margin:0; font:700 16px/1.2 var(--sans); color:var(--text); display:flex; align-items:center; gap:8px}
+  .rt-head h2 svg{width:18px;height:18px;fill:var(--signal)}
+  .rt-x{background:none;border:0;color:var(--muted);font-size:18px;cursor:pointer;padding:4px;line-height:1}
+  .rt-body{display:flex; flex-direction:column; gap:10px; padding:12px 16px 16px; overflow:hidden}
+  .rt-top{display:flex; gap:8px; align-items:center}
+  .rt-save{flex:none; background:var(--signal); color:var(--signal-ink); border:0; border-radius:9px;
+    padding:9px 12px; font:700 12px var(--sans); cursor:pointer}
+  .rt-save:disabled{opacity:.4; cursor:not-allowed}
+  .rt-search{flex:1; min-width:0; background:var(--panel-2); border:1px solid var(--line-2); border-radius:9px;
+    padding:8px 11px; color:var(--text); font:500 12px var(--sans); outline:none}
+  .rt-search::placeholder{color:var(--muted)}
+  .rt-bar{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .rt-bar-sp{flex:1}
+  .rt-count{font:600 11px var(--mono); color:var(--muted)}
+  .rt-mini{background:var(--panel-2); border:1px solid var(--line-2); color:var(--text); border-radius:8px;
+    padding:7px 10px; font:600 11px var(--sans); cursor:pointer}
+  .rt-mini:disabled{opacity:.4; cursor:not-allowed}
+  .rt-mini.danger{color:var(--stop); border-color:var(--line-2)}
+  .rt-mini.danger:hover:not(:disabled){border-color:var(--stop)}
+  .rt-list{flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; display:flex; flex-direction:column; gap:6px;
+    min-height:80px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:8px 0}
+  .rt-empty{color:var(--muted); font:500 12px var(--sans); text-align:center; padding:18px 0; margin:0}
+  .rt-row{display:flex; align-items:center; gap:10px; background:var(--panel-2); border:1px solid var(--line);
+    border-radius:10px; padding:8px 10px}
+  .rt-cb{flex:none; width:18px; height:18px; accent-color:var(--signal); cursor:pointer}
+  .rt-name{flex:1; min-width:0; text-align:left; background:none; border:0; cursor:pointer; color:var(--text)}
+  .rt-name b{display:block; font:600 13px/1.2 var(--sans); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .rt-name span{display:block; font:500 10px/1.3 var(--mono); color:var(--muted); margin-top:2px}
+  .rt-act{flex:none; background:none; border:1px solid var(--line-2); color:var(--muted); border-radius:7px;
+    padding:5px 8px; font:600 10px var(--sans); cursor:pointer}
+  .rt-act.danger{color:var(--stop); border-color:var(--line-2)}
+  .rt-foot{display:flex; gap:8px; flex-wrap:wrap}
+
+  /* settings modal */
+  .st-body{display:flex; flex-direction:column; gap:10px; padding:14px 16px 18px}
+  .st-hint{margin:0; color:var(--muted); font:500 11px/1.45 var(--sans)}
+  .st-row{display:flex; align-items:center; gap:10px; background:var(--panel-2); border:1px solid var(--line);
+    border-radius:10px; padding:10px 12px}
+  .st-row > span{flex:1; font:600 12px var(--sans); color:var(--text)}
+  .st-row input{width:84px; background:var(--panel); border:1px solid var(--line-2); border-radius:8px;
+    color:var(--text); font:600 14px var(--mono); padding:7px 8px; text-align:right; outline:none}
+  .st-row em{font:600 11px var(--mono); color:var(--muted); font-style:normal}
+  .st-row small{width:66px; text-align:right; color:var(--muted); font:500 10px var(--mono)}
+
+  .credit{
+    text-align:center; font:500 10px/1.4 var(--sans); letter-spacing:.04em;
+    color:var(--muted); opacity:.7; padding-top:2px;
+  }
+  .credit b{font-weight:600; color:var(--muted)}
+  .credit .qa-credit{color:var(--muted); font-weight:600; text-decoration:underline; text-underline-offset:2px; text-decoration-thickness:1px}
+  .credit .qa-credit:hover{color:var(--text)}
+
+  /* waypoint marker glyph */
+  .wp{
+    width:24px;height:24px;border-radius:50% 50% 50% 2px; transform:rotate(45deg);
+    background:var(--route); border:2px solid #fff; box-shadow:0 2px 8px rgba(0,0,0,.5);
+    display:grid;place-items:center;
+  }
+  .wp b{transform:rotate(-45deg); color:#062330; font:700 11px/1 var(--mono)}
+  .wp.start{background:var(--ok)} .wp.start b{color:#06281a}
+  .wp.end{background:var(--stop)} .wp.end b{color:#2a0608}
+  /* moving emitter */
+  .emitter{position:relative; width:18px;height:18px}
+  .emitter i{position:absolute; inset:0; border-radius:50%; background:var(--signal); border:2px solid #fff; box-shadow:0 0 10px var(--signal)}
+  body[data-phase="driving"] .emitter::after{
+    content:"";position:absolute; inset:-6px; border-radius:50%; border:2px solid var(--signal); animation:ping 1.6s ease-out infinite;
+  }
+  .bearing{position:absolute; left:50%; top:50%; width:0;height:0;
+    border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:13px solid var(--signal);
+    transform-origin:50% 100%; margin:-13px 0 0 -5px;}
+
+  .hint{
+    /* Above every modal layer (max is .wpmenu at 1200) so a transient message is
+       never hidden behind an open popup (#4535). Safe to stack on top because the
+       hint is pointer-events:none and only visible while opacity is toggled to 1. */
+    position:absolute; z-index:1300; left:50%; top:calc(env(safe-area-inset-top) + 102px); transform:translateX(-50%);
+    background:var(--panel); border:1px solid var(--line-2); color:var(--muted);
+    font:500 12px/1 var(--sans); padding:9px 14px; border-radius:99px; pointer-events:none;
+    box-shadow:0 6px 20px rgba(0,0,0,.4); white-space:nowrap; transition:opacity .3s; max-width:calc(100% - 24px);
+  }
+
+  /* ---------- error toast ----------
+     The general error channel (flashError). The neutral hint pill is easy to miss —
+     an error must not be. Solid red, warning icon, top-centre in the same band as the
+     hint, above every modal (like the hint, but tappable so it can be dismissed).
+     Sits at the top and never reaches the bottom deck, so it can't cover the controls. */
+  .toast{
+    position:absolute; z-index:1310; left:50%; top:calc(env(safe-area-inset-top) + 96px);
+    transform:translateX(-50%);          /* the resting state the keyframes land back on */
+    display:none; align-items:center; gap:9px;
+    background:var(--stop); color:#fff; border:1px solid rgba(255,255,255,.22);
+    font:600 13px/1.35 var(--sans); padding:12px 16px; border-radius:12px; cursor:pointer;
+    box-shadow:0 10px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(242,85,90,.35);
+    max-width:calc(100% - 24px); text-align:left;
+  }
+  .toast.show{display:flex; animation:toast-in .28s ease-out, toast-shake .4s ease-in-out .28s}
+  .toast svg{width:19px;height:19px;flex:none;fill:#fff}
+  @keyframes toast-in{from{opacity:0; transform:translate(-50%,-14px)} to{opacity:1; transform:translate(-50%,0)}}
+  /* 3 small horizontal oscillations — motion is what actually catches the eye */
+  @keyframes toast-shake{
+    0%,100%{transform:translate(-50%,0)}
+    20%{transform:translate(calc(-50% - 6px),0)}
+    40%{transform:translate(calc(-50% + 6px),0)}
+    60%{transform:translate(calc(-50% - 4px),0)}
+    80%{transform:translate(calc(-50% + 4px),0)}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .toast.show{animation:none}          /* no slide, no shake — it just appears */
+  }
+
+  /* place / address search over the map */
+  .searchbar{
+    position:absolute; z-index:580; top:calc(env(safe-area-inset-top) + 54px); left:50%; transform:translateX(-50%);
+    width:min(420px, calc(100% - 24px)); display:flex; align-items:center; gap:8px;
+    background:var(--panel); border:1px solid var(--line-2); border-radius:999px; padding:8px 14px;
+    box-shadow:0 6px 20px rgba(0,0,0,.4);
+  }
+  .searchbar.busy{opacity:.7}
+  /* one-tap "clear route" — floats top-right just under the search bar. Kept below the
+     hud/search/deck layers so an expanded deck on a short screen covers it, never the
+     other way round. Shown only while the route has points (syncTools). */
+  .map-clear,.map-locate{
+    position:absolute; z-index:560; top:calc(env(safe-area-inset-top) + 100px); right:calc(env(safe-area-inset-right) + 12px);
+    width:40px; height:40px; border-radius:50%; padding:0; display:flex; align-items:center; justify-content:center;
+    background:var(--panel); border:1px solid var(--line-2); color:var(--muted); cursor:pointer;
+    box-shadow:0 6px 20px rgba(0,0,0,.4); -webkit-tap-highlight-color:transparent;
+  }
+  /* Play "update ready" snackbar — centred just above the attribution, which itself
+     sits on the deck (bottom set by syncAttributionInset). Chrome 60 safe: flex
+     without `gap`, spacing via margins. */
+  .upd-banner{
+    position:absolute; z-index:590; left:50%; bottom:120px; transform:translateX(-50%);
+    display:flex; align-items:center; max-width:calc(100% - 16px);
+    background:var(--panel); border:1px solid var(--line-2); border-radius:999px; padding:5px 5px 5px 14px;
+    box-shadow:0 6px 20px rgba(0,0,0,.4); color:var(--text); font:600 12px/1.2 var(--sans); white-space:nowrap;
+  }
+  .upd-banner[hidden]{display:none}
+  .upd-banner .upd-msg{min-width:0; overflow:hidden; text-overflow:ellipsis}
+  .upd-act{flex:none; margin-left:8px; border:1px solid var(--line-2); background:var(--panel-2); color:var(--text);
+    font:600 12px/1 var(--sans); padding:8px 12px; border-radius:999px; cursor:pointer}
+  .upd-act.primary{background:var(--signal); color:var(--signal-ink); border-color:transparent}
+  /* each floating map button owns a fixed slot (absolute, not flow), so the clear
+     button hiding never moves the locate button: slot 1 = locate, slot 2 = clear */
+  .map-clear{top:calc(env(safe-area-inset-top) + 148px)}
+  .map-clear[hidden]{display:none}
+  .map-clear svg,.map-locate svg{width:18px; height:18px; fill:currentColor}
+  .map-clear:active{border-color:var(--stop); color:var(--stop)}
+  .map-locate:active{border-color:var(--route); color:var(--route)}
+  .map-locate[aria-disabled="true"]{opacity:.45}
+  .map-locate.busy svg{animation:locate-spin 1s linear infinite}
+  @keyframes locate-spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){ .map-locate.busy svg{animation:none; opacity:.5} }
+  .search-ic{width:16px;height:16px;fill:var(--muted);flex:none}
+  #searchInput{flex:1; min-width:0; background:none; border:0; outline:none; color:var(--text); font:500 13px/1 var(--sans)}
+  #searchInput::placeholder{color:var(--muted)}
+  #searchInput::-webkit-search-cancel-button{filter:invert(.6)}
+  /* When the place-search field is focused the soft keyboard resizes the WebView
+     and the bottom deck rides up over the map, colliding with the search field and
+     the empty-state hint (#4568). While searching, slide the deck out of the way and
+     hide the hint so the search stays clear. Reverses on blur — deck state untouched. */
+  #deck{transition:transform .2s ease}
+  body.searching #deck{transform:translateY(120%); pointer-events:none}
+  body.searching .hint{opacity:0 !important}
+
+  /* ---------- setup / readiness card ---------- */
+  #setup,#devhelp,#mockhelp{
+    position:absolute; z-index:700; left:0; right:0; top:0; bottom:0;
+    display:none; align-items:center; justify-content:center; padding:20px;
+    background:rgba(8,11,15,.72); backdrop-filter:blur(3px);
+  }
+  #devhelp,#mockhelp{z-index:710}
+  #setup.show,#devhelp.show,#mockhelp.show{display:flex}
+  .setup-card{
+    width:100%; max-width:380px; background:var(--panel); border:1px solid var(--line-2);
+    border-radius:16px; padding:18px 18px 16px; box-shadow:0 18px 60px rgba(0,0,0,.6);
+  }
+  .setup-card h2{margin:0 0 4px; font:700 16px/1.2 var(--sans); color:var(--text); display:flex; align-items:center; gap:8px}
+  .setup-card h2 svg{width:18px;height:18px;fill:var(--signal)}
+  .setup-card p{margin:0 0 12px; font:500 12px/1.5 var(--sans); color:var(--muted)}
+  .setup-ver{margin:0 0 10px 26px; font:600 11px/1 var(--mono); letter-spacing:.03em; color:var(--muted); opacity:.85}
+  .check{display:flex; align-items:flex-start; gap:10px; padding:9px 0; border-top:1px solid var(--line)}
+  .check .ic{flex:none; width:20px;height:20px;border-radius:50%; display:grid;place-items:center; margin-top:1px;
+    font:700 12px/1 var(--mono); background:var(--panel-2); border:1px solid var(--line-2); color:var(--muted)}
+  .check.ok .ic{background:rgba(61,220,132,.15); border-color:var(--ok); color:var(--ok)}
+  .check.bad .ic{background:rgba(242,85,90,.12); border-color:var(--stop); color:var(--stop)}
+  .check .body{flex:1; min-width:0}
+  .check .body b{display:block; font:600 12px/1.3 var(--sans); color:var(--text)}
+  .check .body span{display:block; font:500 11px/1.4 var(--sans); color:var(--muted); margin-top:2px}
+  .setup-actions{display:flex; flex-direction:column; gap:8px; margin-top:14px}
+  .setup-actions button{
+    width:100%; font:600 13px/1 var(--sans); padding:11px; border-radius:10px; cursor:pointer; border:1px solid var(--line-2);
+    background:var(--panel-2); color:var(--text); transition:.12s;
+  }
+  .setup-actions button.primary{background:var(--signal); color:var(--signal-ink); border-color:transparent}
+  .setup-actions button:disabled{cursor:default}
+  .setup-actions button:disabled:active{transform:none}
+  .setup-actions button.granted{background:rgba(61,220,132,.12); color:var(--ok); border-color:transparent; opacity:1}
+  .setup-actions button.is-checking{opacity:.7; cursor:progress}
+  .setup-actions button:active{transform:scale(.98)}
+  /* inline, overlay-safe status line for Re-check feedback */
+  .setup-msg{margin-top:12px; padding:9px 11px; border-radius:9px; font:500 11.5px/1.45 var(--sans);
+    background:rgba(245,166,35,.10); border:1px solid rgba(245,166,35,.35); color:var(--text); transition:opacity .2s}
+  .setup-msg[hidden]{display:none}
+  /* tappable checklist row (step 2 → instructions) */
+  .check.tappable{cursor:pointer; border-radius:8px; margin:0 -6px; padding-left:6px; padding-right:6px}
+  .check.tappable:hover{background:var(--panel-2)}
+  .check .go{flex:none; align-self:center; color:var(--muted); font:700 14px/1 var(--sans); margin-top:1px}
+  /* shared mock-location step list (info "?" page + step-2 modal) */
+  .mock-steps{margin:6px 0 2px; padding-left:20px; display:flex; flex-direction:column; gap:7px}
+  .mock-steps li{font:500 12px/1.45 var(--sans); color:var(--text)}
+  .mock-steps li small{display:block; color:var(--muted); font:500 11px/1.4 var(--sans); margin-top:2px}
+  .mock-note{margin:8px 0 0; font:500 11px/1.4 var(--sans); color:var(--muted)}
+
+  /* numbered how-to steps (dev-options helper) */
+  .dev-steps{margin:6px 0 2px; padding:0; list-style:none; counter-reset:step}
+  .dev-steps li{
+    position:relative; padding:9px 0 9px 34px; border-top:1px solid var(--line);
+    font:500 12px/1.5 var(--sans); color:var(--text); counter-increment:step;
+  }
+  .dev-steps li::before{
+    content:counter(step); position:absolute; left:0; top:8px;
+    width:22px;height:22px;border-radius:50%; display:grid;place-items:center;
+    font:700 12px/1 var(--mono); background:var(--panel-2); border:1px solid var(--signal); color:var(--signal);
+  }
+  .dev-steps li b{color:var(--text); font-weight:600}
+  .dev-steps li small{display:block; color:var(--muted); font:500 11px/1.4 var(--sans); margin-top:2px}
+  .dev-note{margin:10px 0 0; font:500 11px/1.4 var(--sans); color:var(--muted); opacity:.85}
+
+  @media (min-width:760px){
+    #deck{left:auto; right:14px; bottom:14px; width:380px; border-radius:16px; border:1px solid var(--line-2)}
+    #hud{padding-top:12px}
+  }
